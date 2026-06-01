@@ -1,0 +1,6 @@
+# Discord Bot Token
+# Get from: https://discord.com/developers/applications
+DISCORD_TOKEN=your_bot_token_here
+
+# FFmpeg Path (usually not needed - Railway has it pre-installed)
+# FFMPEG_PATH=/usr/bin/ffmpeg
