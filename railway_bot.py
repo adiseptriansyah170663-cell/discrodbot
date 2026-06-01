@@ -292,6 +292,9 @@ async def on_command_error(ctx, error):
         pass
 
 
+# Remove default help command so we can create our own
+bot.remove_command('help')
+
 # ---------- Commands ----------
 @bot.command(name='hello')
 async def hello(ctx):
@@ -504,9 +507,9 @@ async def clear(ctx):
         logger.error(f'Clear error: {e}')
 
 
-@bot.command(name='help')
-async def help_cmd(ctx):
-    """Show commands"""
+@bot.command(name='commands')
+async def commands_cmd(ctx):
+    """Show all commands"""
     try:
         embed = discord.Embed(
             title='Discord Music Bot - Commands',
@@ -524,6 +527,7 @@ async def help_cmd(ctx):
             ('clear', 'Clear queue'),
             ('hello', 'Say hello'),
             ('roll [max]', 'Roll number'),
+            ('commands', 'Show this message'),
         ]
         
         for cmd, desc in commands_list:
@@ -532,7 +536,7 @@ async def help_cmd(ctx):
         embed.set_footer(text='Railway Music Bot v1.0')
         await ctx.send(embed=embed)
     except Exception as e:
-        logger.error(f'Help error: {e}')
+        logger.error(f'Commands error: {e}')
 
 
 # ---------- Main ----------
