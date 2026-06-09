@@ -58,15 +58,9 @@ YTDL_OPTS = {
     'skip_download': True,
 }
 
-# Gunakan cookies jika file cookies.txt tersedia (untuk bypass deteksi bot YouTube)
-if os.path.exists('cookies.txt'):
-    YTDL_OPTS['cookiefile'] = 'cookies.txt'
-    logger.info('cookies.txt ditemukan. Menggunakan cookies untuk yt-dlp.')
-else:
-    logger.warning('cookies.txt tidak ditemukan. Anda mungkin terkena blokir bot YouTube.')
-
-# Trik tambahan: gunakan client android/ios/tv agar YouTube memberikan format audio yang standar
-YTDL_OPTS['extractor_args'] = {'youtube': {'client': ['android', 'ios', 'tv']}}
+# Trik andalan: JANGAN gunakan cookies. Gunakan client ANDROID_MUSIC/ios yang terbukti
+# mem-bypass blokir "Sign in to confirm you're not a bot" TANPA memicu error "Requested format is not available"
+YTDL_OPTS['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'ios', 'tv']}}
 
 FFMPEG_OPTS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
