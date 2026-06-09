@@ -18,8 +18,8 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
-COPY railway_bot.py .
+# Copy bot code and all other files (like cookies.txt)
+COPY . .
 
 # Set environment
 ENV PYTHONUNBUFFERED=1
