@@ -23,6 +23,10 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+# Set discord logger to WARNING to suppress 'RESUMED session' INFO logs
+logging.getLogger('discord').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Get Discord token
@@ -53,6 +57,15 @@ YTDL_OPTS = {
     'socket_timeout': 30,
     'skip_download': True,
 }
+
+# Gunakan cookies jika file cookies.txt tersedia (untuk bypass deteksi bot YouTube)
+if os.path.exists('cookies.txt'):
+    YTDL_OPTS['cookiefile'] = 'cookies.txt'
+    logger.info('cookies.txt ditemukan. Menggunakan cookies untuk yt-dlp.')
+else:
+    logger.warning('cookies.txt tidak ditemukan. Anda mungkin terkena blokir bot YouTube.')
+    # Coba gunakan metode fallback client android/ios jika cookies tidak ada
+    YTDL_OPTS['extractor_args'] = {'youtube': {'client': ['android', 'ios']}}
 
 FFMPEG_OPTS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -543,7 +556,7 @@ async def commands_cmd(ctx):
 if __name__ == '__main__':
     try:
         logger.info('Starting Discord Music Bot...')
-        bot.run(DISCORD_TOKEN)
+        bot.run(DISCORD_TOKEN, log_handler=None)
     except KeyboardInterrupt:
         logger.info('Bot shutdown')
     except Exception as e:
