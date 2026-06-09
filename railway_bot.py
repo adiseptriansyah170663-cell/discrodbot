@@ -45,34 +45,45 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ---------- yt-dlp configuration ----------
-YTDL_OPTS = {
+# Default yt-dlp base options (no cookies, IPv6 enabled)
+YTDL_BASE_OPTS = {
     'format': 'bestaudio/best',
     'noplaylist': False,
     'quiet': True,
     'no_warnings': True,
     'default_search': 'ytsearch',
-    'source_address': '0.0.0.0',
     'ignoreerrors': True,
     'socket_timeout': 30,
     'skip_download': True,
 }
-
-# Kembalikan penggunaan cookies, dan PASTIKAN tidak memakai extractor_args (client android)
-# karena cookies web dicampur dengan client android akan membuat YouTube error "format not available"
-if os.path.exists('cookies.txt'):
-    YTDL_OPTS['cookiefile'] = 'cookies.txt'
-    logger.info('cookies.txt ditemukan. Menggunakan cookies untuk yt-dlp (Web Client).')
-else:
-    logger.warning('cookies.txt tidak ditemukan. Anda mungkin terkena blokir bot YouTube.')
-
 
 FFMPEG_OPTS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
 }
 
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTS)
+def get_ytdl_instances():
+    """Mengembalikan beberapa konfigurasi yt-dlp untuk mencoba bypass blokir"""
+    instances = []
+    
+    # 1. Tanpa cookies, Client Android (Paling aman dari n-sig challenge, bypass IPv4/IPv6 block)
+    opts1 = YTDL_BASE_OPTS.copy()
+    opts1['extractor_args'] = {'youtube': {'client': ['android', 'ios']}}
+    instances.append(yt_dlp.YoutubeDL(opts1))
+    
+    # 2. Tanpa cookies, Client Web Creator (Bypass alternatif)
+    opts2 = YTDL_BASE_OPTS.copy()
+    opts2['extractor_args'] = {'youtube': {'client': ['web_creator', 'tv']}}
+    instances.append(yt_dlp.YoutubeDL(opts2))
+    
+    # 3. Dengan cookies (Jika tersedia, sebagai jalan terakhir karena sering memicu CAPTCHA IP)
+    if os.path.exists('cookies.txt'):
+        opts3 = YTDL_BASE_OPTS.copy()
+        opts3['cookiefile'] = 'cookies.txt'
+        # Gunakan default web client agar cocok dengan cookies web
+        instances.append(yt_dlp.YoutubeDL(opts3))
+        
+    return instances
 
 
 def normalize_query(query: str) -> str:
@@ -107,18 +118,26 @@ class Track:
 
     @classmethod
     async def from_query(cls, query, requester, loop):
-        """Extract track info from YouTube"""
+        """Extract track info from YouTube with multi-fallback"""
         def extract():
-            try:
-                return ytdl.extract_info(query, download=False)
-            except Exception as e:
-                logger.error(f'yt-dlp error: {e}')
-                return None
+            instances = get_ytdl_instances()
+            for ytdl in instances:
+                try:
+                    data = ytdl.extract_info(query, download=False)
+                    if data is not None and ('entries' in data or 'url' in data):
+                        # Pastikan kita benar-benar mendapatkan URL (bukan cuma error/images)
+                        entries = data.get('entries', [data])
+                        if any(e and e.get('url') for e in entries):
+                            return data
+                except Exception as e:
+                    logger.debug(f'yt-dlp extraction fallback failed: {e}')
+                    continue
+            return None
         
         try:
             data = await asyncio.wait_for(
                 loop.run_in_executor(None, extract), 
-                timeout=15
+                timeout=30
             )
         except asyncio.TimeoutError:
             logger.warning(f'Timeout loading: {query}')
