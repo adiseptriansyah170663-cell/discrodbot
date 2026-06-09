@@ -4,12 +4,13 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (FFmpeg, etc)
+# Install system dependencies (FFmpeg, Node.js for yt-dlp JS challenges, etc)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libopus-dev \
     libffi-dev \
     libsodium-dev \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
