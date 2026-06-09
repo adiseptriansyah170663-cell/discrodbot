@@ -66,21 +66,21 @@ def get_ytdl_instances():
     """Mengembalikan beberapa konfigurasi yt-dlp untuk mencoba bypass blokir"""
     instances = []
     
-    # 1. Tanpa cookies, Client Android (Paling aman dari n-sig challenge, bypass IPv4/IPv6 block)
+    # 1. ANDROID_MUSIC: Klien YouTube Music Android (Sangat kebal terhadap IP Block)
     opts1 = YTDL_BASE_OPTS.copy()
-    opts1['extractor_args'] = {'youtube': {'client': ['android', 'ios']}}
+    opts1['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'ANDROID_VR']}}
     instances.append(yt_dlp.YoutubeDL(opts1))
     
-    # 2. Tanpa cookies, Client Web Creator (Bypass alternatif)
+    # 2. WEB_CREATOR: Klien YouTube Studio (Sering mem-bypass blokir)
     opts2 = YTDL_BASE_OPTS.copy()
-    opts2['extractor_args'] = {'youtube': {'client': ['web_creator', 'tv']}}
+    opts2['extractor_args'] = {'youtube': {'client': ['WEB_CREATOR', 'IOS']}}
     instances.append(yt_dlp.YoutubeDL(opts2))
     
-    # 3. Dengan cookies (Jika tersedia, sebagai jalan terakhir karena sering memicu CAPTCHA IP)
+    # 3. Cookies dengan format khusus (Jika tersedia)
     if os.path.exists('cookies.txt'):
         opts3 = YTDL_BASE_OPTS.copy()
         opts3['cookiefile'] = 'cookies.txt'
-        # Gunakan default web client agar cocok dengan cookies web
+        opts3['format'] = 'bestaudio/bestvideo+bestaudio/best' # Coba format yang lebih longgar
         instances.append(yt_dlp.YoutubeDL(opts3))
         
     return instances
