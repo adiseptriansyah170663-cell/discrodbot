@@ -64,8 +64,9 @@ if os.path.exists('cookies.txt'):
     logger.info('cookies.txt ditemukan. Menggunakan cookies untuk yt-dlp.')
 else:
     logger.warning('cookies.txt tidak ditemukan. Anda mungkin terkena blokir bot YouTube.')
-    # Coba gunakan metode fallback client alternatif jika cookies tidak ada
-    YTDL_OPTS['extractor_args'] = {'youtube': {'client': ['tv', 'tv_embedded', 'ios']}}
+
+# Trik tambahan: gunakan client android/ios/tv agar YouTube memberikan format audio yang standar
+YTDL_OPTS['extractor_args'] = {'youtube': {'client': ['android', 'ios', 'tv']}}
 
 FFMPEG_OPTS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
