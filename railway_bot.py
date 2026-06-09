@@ -47,7 +47,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # ---------- yt-dlp configuration ----------
 YTDL_OPTS = {
-    'format': 'bestaudio[ext=m4a]/bestaudio/best',
+    'format': 'bestaudio/best',
     'noplaylist': False,
     'quiet': True,
     'no_warnings': True,
