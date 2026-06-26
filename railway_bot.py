@@ -45,15 +45,24 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Default yt-dlp base options (no cookies, IPv6 enabled)
 YTDL_BASE_OPTS = {
     'format': 'bestaudio/best',
     'noplaylist': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch5',
+    'default_search': 'ytsearch',
     'ignoreerrors': True,
     'socket_timeout': 30,
+    'skip_download': True,
+}
+
+# Lightweight search options (flat extraction = no stream URL fetching)
+YTDL_SEARCH_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': True,
+    'ignoreerrors': True,
+    'socket_timeout': 15,
     'skip_download': True,
 }
 
@@ -121,7 +130,7 @@ class Track:
 
     @classmethod
     async def from_query(cls, query, requester, loop):
-        """Extract track info from YouTube with multi-fallback"""
+        """Extract track info from YouTube with multi-fallback (for URLs/playlists)"""
         def extract():
             instances = get_ytdl_instances()
             for ytdl in instances:
@@ -158,6 +167,85 @@ class Track:
         
         return [cls(e, requester) for e in entries]
 
+    @classmethod
+    async def from_url(cls, url, requester, loop):
+        """Extract a single track from a URL (full extraction for stream URL)"""
+        def extract():
+            instances = get_ytdl_instances()
+            for ytdl in instances:
+                try:
+                    data = ytdl.extract_info(url, download=False)
+                    if data is not None and data.get('url'):
+                        return data
+                except Exception as e:
+                    logger.debug(f'yt-dlp single extraction fallback failed: {e}')
+                    continue
+            return None
+
+        try:
+            data = await asyncio.wait_for(
+                loop.run_in_executor(None, extract),
+                timeout=30
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f'Timeout loading URL: {url}')
+            return None
+        except Exception as e:
+            logger.error(f'Error extracting URL: {e}')
+            return None
+
+        if data is None:
+            return None
+
+        return cls(data, requester)
+
+
+class SearchResult:
+    """Lightweight search result (no stream URL, just metadata)"""
+
+    def __init__(self, title, video_url, duration):
+        self.title = title
+        self.url = video_url  # webpage URL like https://youtube.com/watch?v=xxx
+        self.duration = duration
+
+
+async def search_youtube(query, loop, max_results=5):
+    """Search YouTube with flat extraction (no stream URL fetching, avoids bot detection)"""
+    def do_search():
+        search_query = f'ytsearch{max_results}:{query}'
+        try:
+            with yt_dlp.YoutubeDL(YTDL_SEARCH_OPTS) as ytdl:
+                data = ytdl.extract_info(search_query, download=False)
+                if data and 'entries' in data:
+                    results = []
+                    for entry in data['entries']:
+                        if entry is None:
+                            continue
+                        title = entry.get('title', 'Unknown')
+                        video_url = entry.get('url', '')
+                        if not video_url and entry.get('id'):
+                            video_url = f'https://www.youtube.com/watch?v={entry["id"]}'
+                        duration = entry.get('duration', 0)
+                        results.append(SearchResult(title, video_url, duration))
+                    return results
+        except Exception as e:
+            logger.error(f'Search failed: {e}')
+        return []
+
+    try:
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, do_search),
+            timeout=15
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f'Search timeout: {query}')
+        return []
+    except Exception as e:
+        logger.error(f'Search error: {e}')
+        return []
+
+    return results
+
 
 def is_url(query: str) -> bool:
     """Check if a query is a URL"""
@@ -175,19 +263,17 @@ def format_duration(seconds):
 class SearchSelect(discord.ui.Select):
     """Dropdown menu for selecting a search result"""
 
-    def __init__(self, tracks: list, requester):
-        self.tracks = tracks
-        self.requester = requester
+    def __init__(self, results: list):
+        self.results = results
         options = []
-        for i, track in enumerate(tracks[:5]):
-            dur = format_duration(track.duration)
-            label = track.title[:100]  
+        for i, result in enumerate(results[:5]):
+            dur = format_duration(result.duration)
+            label = result.title[:100]
             options.append(
                 discord.SelectOption(
                     label=label,
                     value=str(i),
-                    description=f'#{i+1} {dur}'.strip(),
-                    emoji=['1️', '2️', '3️', '4️', '5️'][i]
+                    description=f'#{i+1} {dur}'.strip()
                 )
             )
         super().__init__(
@@ -199,14 +285,14 @@ class SearchSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         idx = int(self.values[0])
-        selected_track = self.tracks[idx]
-        self.view.selected_track = selected_track
+        selected = self.results[idx]
+        self.view.selected_result = selected
         self.view.stop()
 
         # Acknowledge and update the message
         embed = discord.Embed(
             title='Song Selected',
-            description=f'**{selected_track.title}** {format_duration(selected_track.duration)}',
+            description=f'**{selected.title}** {format_duration(selected.duration)}',
             color=discord.Color.green()
         )
         await interaction.response.edit_message(embed=embed, view=None)
@@ -231,11 +317,11 @@ class CancelButton(discord.ui.Button):
 class SearchView(discord.ui.View):
     """View with dropdown + cancel for search results"""
 
-    def __init__(self, tracks: list, requester, author_id: int):
+    def __init__(self, results: list, author_id: int):
         super().__init__(timeout=SEARCH_TIMEOUT)
-        self.selected_track = None
+        self.selected_result = None
         self.author_id = author_id
-        self.add_item(SearchSelect(tracks, requester))
+        self.add_item(SearchSelect(results))
         self.add_item(CancelButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -249,7 +335,7 @@ class SearchView(discord.ui.View):
 
     async def on_timeout(self):
         """Disable all items on timeout"""
-        self.selected_track = None
+        self.selected_result = None
         self.stop()
 
 
@@ -501,28 +587,26 @@ async def play(ctx, *, query: str):
                 await ctx.send(f'ERROR: Failed to join voice: {str(e)[:100]}')
                 return
         
-        async with ctx.typing():
-            try:
-                normalized = normalize_query(query)
-                logger.info(f'Loading: {query}')
-                
-                tracks = await Track.from_query(
-                    normalized,
-                    ctx.author,
-                    bot.loop
-                )
-                
-            except Exception as e:
-                logger.error(f'Track load error: {e}')
-                await ctx.send(f'ERROR: Failed to load: {str(e)[:100]}')
+        # If it's a URL, do full extraction and queue directly
+        if is_url(query):
+            async with ctx.typing():
+                try:
+                    normalized = normalize_query(query)
+                    logger.info(f'Loading URL: {query}')
+                    tracks = await Track.from_query(
+                        normalized,
+                        ctx.author,
+                        bot.loop
+                    )
+                except Exception as e:
+                    logger.error(f'Track load error: {e}')
+                    await ctx.send(f'ERROR: Failed to load: {str(e)[:100]}')
+                    return
+
+            if not tracks:
+                await ctx.send('ERROR: No tracks found.')
                 return
 
-        if not tracks:
-            await ctx.send('ERROR: No tracks found.')
-            return
-
-        # If it's a URL or playlist, queue directly (no selection needed)
-        if is_url(query):
             player = get_player(ctx)
             player.queue.extend(tracks)
             
@@ -536,33 +620,46 @@ async def play(ctx, *, query: str):
                 )
             return
 
-        # Search query — show top 5 results for user selection
-        results = tracks[:5]
+        # Search query -- lightweight flat search (no bot detection)
+        async with ctx.typing():
+            try:
+                logger.info(f'Searching: {query}')
+                results = await search_youtube(query, bot.loop)
+            except Exception as e:
+                logger.error(f'Search error: {e}')
+                await ctx.send(f'ERROR: Failed to search: {str(e)[:100]}')
+                return
+
+        if not results:
+            await ctx.send('ERROR: No results found.')
+            return
+
+        # Show top 5 results for user selection
+        results = results[:5]
         embed = discord.Embed(
-            title=f'🔎 Search results for: {query[:200]}',
+            title=f'Search results for: {query[:200]}',
             description='Select a song from the dropdown below:',
             color=discord.Color.blurple()
         )
-        for i, track in enumerate(results):
-            emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
-            dur = format_duration(track.duration)
+        for i, result in enumerate(results):
+            dur = format_duration(result.duration)
             embed.add_field(
-                name=f'{emoji} {track.title}',
+                name=f'#{i+1}. {result.title}',
                 value=f'{dur}' if dur else '(unknown duration)',
                 inline=False
             )
         embed.set_footer(text=f'Select within {SEARCH_TIMEOUT}s or it will be cancelled.')
 
-        view = SearchView(results, ctx.author, ctx.author.id)
+        view = SearchView(results, ctx.author.id)
         msg = await ctx.send(embed=embed, view=view)
 
         # Wait for user selection
         timed_out = await view.wait()
 
-        if timed_out or view.selected_track is None:
+        if timed_out or view.selected_result is None:
             if timed_out:
                 timeout_embed = discord.Embed(
-                    title='⏰ Search Timed Out',
+                    title='Search Timed Out',
                     description='No song was selected.',
                     color=discord.Color.greyple()
                 )
@@ -572,12 +669,19 @@ async def play(ctx, *, query: str):
                     pass
             return
 
-        # Queue the selected track
-        selected = view.selected_track
+        # User selected a result -- now do full extraction for just this one video
+        selected = view.selected_result
+        loading_msg = await ctx.send(f'Loading: {selected.title}...')
+
+        track = await Track.from_url(selected.url, ctx.author, bot.loop)
+        if track is None:
+            await loading_msg.edit(content=f'ERROR: Failed to load "{selected.title}". Try another result.')
+            return
+
         player = get_player(ctx)
-        player.queue.append(selected)
-        duration = format_duration(selected.duration)
-        await ctx.send(f'Queued: {selected.title} {duration}')
+        player.queue.append(track)
+        duration = format_duration(track.duration)
+        await loading_msg.edit(content=f'Queued: {track.title} {duration}')
 
     except Exception as e:
         logger.error(f'Play error: {e}')
@@ -591,32 +695,27 @@ async def search(ctx, *, query: str):
         async with ctx.typing():
             try:
                 logger.info(f'Searching: {query}')
-                tracks = await Track.from_query(
-                    query,
-                    ctx.author,
-                    bot.loop
-                )
+                results = await search_youtube(query, bot.loop)
             except Exception as e:
                 logger.error(f'Search error: {e}')
                 await ctx.send(f'ERROR: Failed to search: {str(e)[:100]}')
                 return
 
-        if not tracks:
+        if not results:
             await ctx.send('ERROR: No results found.')
             return
 
-        results = tracks[:5]
+        results = results[:5]
         embed = discord.Embed(
-            title=f'🔎 Search results for: {query[:200]}',
+            title=f'Search results for: {query[:200]}',
             description='Use `!play <URL>` to play a specific result, or select below to queue it.',
             color=discord.Color.blurple()
         )
-        for i, track in enumerate(results):
-            emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
-            dur = format_duration(track.duration)
-            url_text = f'[Link]({track.webpage_url})' if track.webpage_url else ''
+        for i, result in enumerate(results):
+            dur = format_duration(result.duration)
+            url_text = f'[Link]({result.url})' if result.url else ''
             embed.add_field(
-                name=f'{emoji} {track.title}',
+                name=f'#{i+1}. {result.title}',
                 value=f'{dur} {url_text}'.strip() or '(unknown)',
                 inline=False
             )
@@ -624,14 +723,14 @@ async def search(ctx, *, query: str):
 
         # Only allow queueing if user is in a voice channel
         if ctx.author.voice and ctx.author.voice.channel:
-            view = SearchView(results, ctx.author, ctx.author.id)
+            view = SearchView(results, ctx.author.id)
             msg = await ctx.send(embed=embed, view=view)
 
             timed_out = await view.wait()
-            if timed_out or view.selected_track is None:
+            if timed_out or view.selected_result is None:
                 if timed_out:
                     timeout_embed = discord.Embed(
-                        title='⏰ Search Timed Out',
+                        title='Search Timed Out',
                         description='No song was selected.',
                         color=discord.Color.greyple()
                     )
@@ -641,7 +740,7 @@ async def search(ctx, *, query: str):
                         pass
                 return
 
-            selected = view.selected_track
+            selected = view.selected_result
 
             # Auto-join voice if not already connected
             if ctx.voice_client is None:
@@ -651,12 +750,19 @@ async def search(ctx, *, query: str):
                     await ctx.send(f'ERROR: Failed to join voice: {str(e)[:100]}')
                     return
 
+            # Full extraction for the selected result
+            loading_msg = await ctx.send(f'Loading: {selected.title}...')
+            track = await Track.from_url(selected.url, ctx.author, bot.loop)
+            if track is None:
+                await loading_msg.edit(content=f'ERROR: Failed to load "{selected.title}". Try another result.')
+                return
+
             player = get_player(ctx)
-            player.queue.append(selected)
-            duration = format_duration(selected.duration)
-            await ctx.send(f'Queued: {selected.title} {duration}')
+            player.queue.append(track)
+            duration = format_duration(track.duration)
+            await loading_msg.edit(content=f'Queued: {track.title} {duration}')
         else:
-            # Not in voice — just show results
+            # Not in voice -- just show results
             await ctx.send(embed=embed)
 
     except Exception as e:
