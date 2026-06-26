@@ -567,30 +567,30 @@ async def on_message(message):
     # Check for .osr attachments
     for attachment in message.attachments:
         if attachment.filename.endswith('.osr'):
-            reply_msg = await message.reply("🔄 Detected osu! replay! Starting in-house rendering engine (this will take a while)...")
+            reply_msg = await message.reply("[Detected osu! replay] Starting in-house rendering engine (this will take a while)...")
             
             # Download file
             file_bytes = await attachment.read()
             
             # Submit render
-            await reply_msg.edit(content="⏳ Parsing replay, downloading beatmap, and rendering video (expect ~15-30 mins)...")
+            await reply_msg.edit(content="[Status] Parsing replay, downloading beatmap, and rendering video (expect ~15-30 mins)...")
             rendered_path = await danser_manager.process_replay(file_bytes)
             
             if rendered_path and os.path.exists(rendered_path):
                 try:
                     await message.channel.send(
-                        content=f"✅ Here is your natively rendered replay ({attachment.filename}):",
+                        content=f"[Done] Here is your natively rendered replay ({attachment.filename}):",
                         file=discord.File(rendered_path)
                     )
                     await reply_msg.delete()
                 except Exception as e:
                     logger.error(f"Failed to upload video: {e}")
-                    await reply_msg.edit(content=f"❌ Failed to upload video. It might exceed Discord's file limits.")
+                    await reply_msg.edit(content=f"[Error] Failed to upload video. It might exceed Discord's file limits.")
                 finally:
                     if os.path.exists(rendered_path):
                         os.remove(rendered_path)
             else:
-                await reply_msg.edit(content="❌ Rendering failed! Check bot logs for details.")
+                await reply_msg.edit(content="[Error] Rendering failed! Check bot logs for details.")
 
     # Process other commands
     await bot.process_commands(message)

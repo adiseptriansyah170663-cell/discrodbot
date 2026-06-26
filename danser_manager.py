@@ -64,7 +64,7 @@ class DanserManager:
                     logger.error("No beatmap found for hash.")
                     return False
                 
-                beatmapset_id = data[0].get("SetID")
+                beatmapset_id = data[0].get("id")
                 if not beatmapset_id:
                     return False
                 
