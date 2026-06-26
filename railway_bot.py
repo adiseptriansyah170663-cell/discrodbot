@@ -14,8 +14,6 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
-from ordr_integration import ordr_manager
-from video_compressor import process_and_compress
 
 # Load environment variables
 load_dotenv()
@@ -564,92 +562,6 @@ async def on_message(message):
   if message.author.bot:
     return
 
-  # Check for .osr attachments
-  for attachment in message.attachments:
-    if attachment.filename.endswith('.osr'):
-      reply_msg = await message.reply("[Detected osu! replay] Submitting to o!rdr for 1080p rendering...")
-      
-      # Download file
-      file_bytes = await attachment.read()
-      
-      # Get user skin
-      skin_id = ordr_manager.get_user_skin(str(message.author.id))
-      
-      # Submit render
-      result = await ordr_manager.submit_render(file_bytes, skin_id)
-      if result.get("http_status", 500) == 201 or result.get("errorCode") == 0:
-        render_id = result.get("renderID")
-        await reply_msg.edit(content=f"[Status] Render job created! (ID: {render_id}). Waiting for cluster...")
-        
-        # Poll status
-        anim_frames = ['[=   ]', '[==  ]', '[=== ]', '[====]']
-        anim_idx = 0
-        while True:
-          await asyncio.sleep(5)
-          status = await ordr_manager.check_render_status(render_id)
-          anim_frame = anim_frames[anim_idx % len(anim_frames)]
-          anim_idx += 1
-          if not status:
-            continue
-          
-          progress = status.get("progress", "")
-          video_url = status.get("videoUrl", "")
-          is_valid_url = video_url and str(video_url).strip().lower() not in ["none", "null", ""]
-
-          if "Done" in progress or is_valid_url:
-            if not is_valid_url:
-              await reply_msg.edit(content=f"{anim_frame} [Status] Finalizing video upload to o!rdr CDN...")
-              continue
-              
-            state = {"status_text": "Starting download..."}
-            def on_progress(text):
-              state["status_text"] = text
-
-            c_anim_idx = 0
-            compression_task = asyncio.create_task(process_and_compress(video_url, callback=on_progress))
-            while not compression_task.done():
-              c_anim_frame = anim_frames[c_anim_idx % len(anim_frames)]
-              c_anim_idx += 1
-              try:
-                await reply_msg.edit(content=f"{c_anim_frame} [Status] {state['status_text']}")
-              except Exception:
-                pass
-              for _ in range(30):
-                if compression_task.done():
-                  break
-                await asyncio.sleep(0.1)
-                
-            compressed_path = compression_task.result()
-            if compressed_path:
-              try:
-                await message.channel.send(
-                  content=f"[Done] Here is your rendered replay ({attachment.filename}):",
-                  file=discord.File(compressed_path)
-                )
-                await reply_msg.delete()
-              except Exception as e:
-                logger.error(f"Failed to upload video: {e}")
-                await reply_msg.edit(content=f"[Error] Failed to upload compressed video. It might still be too large. Link: {video_url}")
-              finally:
-                if os.path.exists(compressed_path):
-                  os.remove(compressed_path)
-            else:
-              await reply_msg.edit(content=f"[Error] Compression failed! Raw video link: {video_url}")
-            break
-          elif progress == "Error":
-            await reply_msg.edit(content="[Error] Render failed due to an error on the o!rdr cluster.")
-            break
-          else:
-            # The progress string from o!rdr contains percentage during rendering (e.g., 'Rendering... (90%)')
-            msg_text = progress if progress and progress != "Preparing..." else status.get("description", progress)
-            # Ensure text is ascii safe (fallback emoji strip)
-            msg_text = msg_text.encode('ascii', 'ignore').decode('ascii').strip()
-            if not msg_text:
-                msg_text = "Processing..."
-            await reply_msg.edit(content=f"{anim_frame} [Status] {msg_text}")
-      else:
-        await reply_msg.edit(content=f"[Error] Failed to submit render to o!rdr: {result.get('message', 'Unknown error')}")
-
   # Process other commands
   await bot.process_commands(message)
 
@@ -681,32 +593,6 @@ async def on_command_error(ctx, error):
 bot.remove_command('help')
 
 # ---------- Commands ----------
-
-@bot.group(name='skin', invoke_without_command=True)
-async def skin_cmd(ctx):
-  """Ordr Skin commands (use !skin list or !skin set <id>)"""
-  await ctx.send("Use `!skin list` to see popular skins, or `!skin set <id>` to set your preferred rendering skin.")
-
-@skin_cmd.command(name='list')
-async def skin_list(ctx):
-  msg = await ctx.send("Fetching skins from o!rdr...")
-  skins = await ordr_manager.fetch_available_skins(page_size=20)
-  if not skins:
-    await msg.edit(content="Failed to fetch skins.")
-    return
-    
-  embed = discord.Embed(title="Top 20 osu! Skins (o!rdr)", color=discord.Color.blue())
-  for s in skins:
-    embed.add_field(name=f"ID: {s.get('id')}", value=s.get('presentationName', 'Unknown'), inline=True)
-    
-  embed.set_footer(text="Use !skin set <id> to choose your skin.")
-  await msg.edit(content="", embed=embed)
-
-@skin_cmd.command(name='set')
-async def skin_set(ctx, skin_id: int):
-  ordr_manager.set_user_skin(str(ctx.author.id), skin_id)
-  await ctx.send(f"[Success] Your preferred rendering skin has been set to ID {skin_id}!")
-
 
 @bot.command(name='hello')
 async def hello(ctx):
