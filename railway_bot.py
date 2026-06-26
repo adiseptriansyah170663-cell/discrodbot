@@ -595,7 +595,7 @@ async def on_message(message):
           progress = status.get("progress", "")
           if "Done" in progress or status.get("videoUrl"):
             video_url = status.get("videoUrl", "")
-            if video_url:
+            if video_url and str(video_url).strip().lower() not in ["none", "null", ""]:
               await reply_msg.edit(content="[Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
               compressed_path = await process_and_compress(video_url)
               if compressed_path:
