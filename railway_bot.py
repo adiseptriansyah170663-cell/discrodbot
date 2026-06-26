@@ -75,26 +75,31 @@ FFMPEG_OPTS = {
 }
 
 def get_ytdl_instances():
-    """Mengembalikan beberapa konfigurasi yt-dlp untuk mencoba bypass blokir"""
+    """Mengembalikan beberapa konfigurasi yt-dlp untuk mencoba bypass blokir.
+    Cookies digunakan di SEMUA instance karena Railway IP selalu diblokir tanpa cookies."""
+    has_cookies = os.path.exists('cookies.txt')
     instances = []
-    
-    # 1. ANDROID_MUSIC: Klien YouTube Music Android (Sangat kebal terhadap IP Block)
+
+    # 1. Default client dengan cookies (paling stabil dan reliable)
     opts1 = YTDL_BASE_OPTS.copy()
-    opts1['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'ANDROID_VR']}}
+    if has_cookies:
+        opts1['cookiefile'] = 'cookies.txt'
     instances.append(yt_dlp.YoutubeDL(opts1))
-    
-    # 2. WEB_CREATOR: Klien YouTube Studio (Sering mem-bypass blokir)
+
+    # 2. WEB_CREATOR + MWEB client dengan cookies (bypass tambahan)
     opts2 = YTDL_BASE_OPTS.copy()
-    opts2['extractor_args'] = {'youtube': {'client': ['WEB_CREATOR', 'IOS']}}
+    opts2['extractor_args'] = {'youtube': {'client': ['WEB_CREATOR', 'MWEB']}}
+    if has_cookies:
+        opts2['cookiefile'] = 'cookies.txt'
     instances.append(yt_dlp.YoutubeDL(opts2))
-    
-    # 3. Cookies dengan format khusus (Jika tersedia)
-    if os.path.exists('cookies.txt'):
-        opts3 = YTDL_BASE_OPTS.copy()
+
+    # 3. ANDROID_MUSIC client dengan cookies (fallback mobile)
+    opts3 = YTDL_BASE_OPTS.copy()
+    opts3['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'IOS']}}
+    if has_cookies:
         opts3['cookiefile'] = 'cookies.txt'
-        opts3['format'] = 'bestaudio/bestvideo+bestaudio/best' # Coba format yang lebih longgar
-        instances.append(yt_dlp.YoutubeDL(opts3))
-        
+    instances.append(yt_dlp.YoutubeDL(opts3))
+
     return instances
 
 
@@ -172,14 +177,18 @@ class Track:
         """Extract a single track from a URL (full extraction for stream URL)"""
         def extract():
             instances = get_ytdl_instances()
-            for ytdl in instances:
+            for i, ytdl in enumerate(instances, 1):
                 try:
+                    logger.info(f'from_url attempt {i}/{len(instances)} for: {url}')
                     data = ytdl.extract_info(url, download=False)
                     if data is not None and data.get('url'):
+                        logger.info(f'from_url succeeded on attempt {i}')
                         return data
+                    logger.warning(f'from_url attempt {i}: no stream URL in response')
                 except Exception as e:
-                    logger.debug(f'yt-dlp single extraction fallback failed: {e}')
+                    logger.warning(f'from_url attempt {i} failed: {type(e).__name__}: {e}')
                     continue
+            logger.error(f'All {len(instances)} extraction attempts failed for: {url}')
             return None
 
         try:
