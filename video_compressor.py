@@ -11,21 +11,27 @@ logger = logging.getLogger(__name__)
 async def get_direct_video_url(url: str) -> str:
     """If the URL is a link.issou.best wrapper, fetch the actual mp4 from og:video."""
     if "link.issou.best" in url:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url) as response:
                     text = await response.text()
                     match = re.search(r'<meta property="og:video" content="([^"]+\.mp4)"', text)
                     if match:
                         return match.group(1)
+                    # Also try og:video:url just in case
+                    match2 = re.search(r'<meta property="og:video:url" content="([^"]+\.mp4)"', text)
+                    if match2:
+                        return match2.group(1)
         except Exception as e:
             logger.error(f"Failed to extract direct video URL: {e}")
     return url
 
 async def download_video(url: str, filepath: str) -> bool:
     """Download the raw video from a URL."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     logger.error(f"Failed to download video: HTTP {response.status}")
