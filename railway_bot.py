@@ -593,28 +593,31 @@ async def on_message(message):
             continue
           
           progress = status.get("progress", "")
-          if "Done" in progress or status.get("videoUrl"):
-            video_url = status.get("videoUrl", "")
-            if video_url and str(video_url).strip().lower() not in ["none", "null", ""]:
-              await reply_msg.edit(content="[Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
-              compressed_path = await process_and_compress(video_url)
-              if compressed_path:
-                try:
-                  await message.channel.send(
-                    content=f"[Done] Here is your rendered replay ({attachment.filename}):",
-                    file=discord.File(compressed_path)
-                  )
-                  await reply_msg.delete()
-                except Exception as e:
-                  logger.error(f"Failed to upload video: {e}")
-                  await reply_msg.edit(content=f"[Error] Failed to upload compressed video. It might still be too large. Link: {video_url}")
-                finally:
-                  if os.path.exists(compressed_path):
-                    os.remove(compressed_path)
-              else:
-                await reply_msg.edit(content=f"[Error] Compression failed! Raw video link: {video_url}")
+          video_url = status.get("videoUrl", "")
+          is_valid_url = video_url and str(video_url).strip().lower() not in ["none", "null", ""]
+
+          if "Done" in progress or is_valid_url:
+            if not is_valid_url:
+              await reply_msg.edit(content=f"{anim_frame} [Status] Finalizing video upload to o!rdr CDN...")
+              continue
+              
+            await reply_msg.edit(content="[Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
+            compressed_path = await process_and_compress(video_url)
+            if compressed_path:
+              try:
+                await message.channel.send(
+                  content=f"[Done] Here is your rendered replay ({attachment.filename}):",
+                  file=discord.File(compressed_path)
+                )
+                await reply_msg.delete()
+              except Exception as e:
+                logger.error(f"Failed to upload video: {e}")
+                await reply_msg.edit(content=f"[Error] Failed to upload compressed video. It might still be too large. Link: {video_url}")
+              finally:
+                if os.path.exists(compressed_path):
+                  os.remove(compressed_path)
             else:
-              await reply_msg.edit(content="[Done] Render complete, but no video URL was provided.")
+              await reply_msg.edit(content=f"[Error] Compression failed! Raw video link: {video_url}")
             break
           elif progress == "Error":
             await reply_msg.edit(content="[Error] Render failed due to an error on the o!rdr cluster.")
