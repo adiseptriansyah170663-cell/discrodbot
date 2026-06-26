@@ -80,8 +80,7 @@ class OrdrManager:
                            filename='replay.osr',
                            content_type='application/octet-stream')
             data.add_field('resolution', '1920x1080')
-            if skin_id:
-                data.add_field('skin', str(skin_id))
+            data.add_field('skin', str(skin_id) if skin_id else '1')
             
             async with aiohttp.ClientSession() as session:
                 url = f"{ORDR_API_BASE}/renders"
