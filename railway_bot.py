@@ -128,7 +128,6 @@ class Track:
                 try:
                     data = ytdl.extract_info(query, download=False)
                     if data is not None and ('entries' in data or 'url' in data):
-                        # Pastikan kita benar-benar mendapatkan URL (bukan cuma error/images)
                         entries = data.get('entries', [data])
                         if any(e and e.get('url') for e in entries):
                             return data
@@ -182,13 +181,13 @@ class SearchSelect(discord.ui.Select):
         options = []
         for i, track in enumerate(tracks[:5]):
             dur = format_duration(track.duration)
-            label = track.title[:100]  # Discord label max is 100 chars
+            label = track.title[:100]  
             options.append(
                 discord.SelectOption(
                     label=label,
                     value=str(i),
                     description=f'#{i+1} {dur}'.strip(),
-                    emoji=['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
+                    emoji=['1️', '2️', '3️', '4️', '5️'][i]
                 )
             )
         super().__init__(
@@ -206,7 +205,7 @@ class SearchSelect(discord.ui.Select):
 
         # Acknowledge and update the message
         embed = discord.Embed(
-            title='✅ Song Selected',
+            title='Song Selected',
             description=f'**{selected_track.title}** {format_duration(selected_track.duration)}',
             color=discord.Color.green()
         )
@@ -217,13 +216,13 @@ class CancelButton(discord.ui.Button):
     """Cancel button for search view"""
 
     def __init__(self):
-        super().__init__(label='Cancel', style=discord.ButtonStyle.secondary, emoji='❌')
+        super().__init__(label='Cancel', style=discord.ButtonStyle.secondary, emoji='')
 
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_track = None
         self.view.stop()
         embed = discord.Embed(
-            title='❌ Search Cancelled',
+            title='Search Cancelled',
             color=discord.Color.greyple()
         )
         await interaction.response.edit_message(embed=embed, view=None)
