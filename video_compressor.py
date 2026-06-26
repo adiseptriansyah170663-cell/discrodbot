@@ -29,7 +29,7 @@ async def get_direct_video_url(url: str) -> str:
             logger.error(f"Failed to extract direct video URL: {e}")
     return url
 
-async def download_video(url: str, filepath: str) -> bool:
+async def download_video(url: str, filepath: str, callback=None) -> bool:
     """Download the raw video from a URL."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
@@ -38,12 +38,18 @@ async def download_video(url: str, filepath: str) -> bool:
                 if response.status != 200:
                     logger.error(f"Failed to download video: HTTP {response.status}")
                     return False
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
                 with open(filepath, 'wb') as f:
                     while True:
                         chunk = await response.content.read(8192)
                         if not chunk:
                             break
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        if callback and total_size > 0:
+                            pct = (downloaded / total_size) * 100
+                            callback(f"Downloading... ({pct:.1f}%)")
         return True
     except Exception as e:
         logger.error(f"Exception downloading video: {e}")
@@ -68,7 +74,7 @@ async def get_video_duration(filepath: str) -> float:
         logger.error(f"Exception getting video duration: {e}")
         return 0.0
 
-async def compress_video(input_path: str, output_path: str, target_size_mb: float = 9.5) -> bool:
+async def compress_video(input_path: str, output_path: str, target_size_mb: float = 9.5, callback=None) -> bool:
     """Compress video to fit within a target size (default 9.5MB for Discord's 10MB limit)."""
     duration = await get_video_duration(input_path)
     if duration <= 0:
@@ -105,22 +111,40 @@ async def compress_video(input_path: str, output_path: str, target_size_mb: floa
             '-maxrate', f'{vb_k}k',
             '-bufsize', f'{vb_k * 2}k',
             '-b:a', f'{ab_k}k',
+            '-progress', 'pipe:1',
             output_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line_str = line.decode('utf-8', errors='ignore').strip()
+            if line_str.startswith('out_time_us=') and callback and duration > 0:
+                try:
+                    us_str = line_str.split('=')[1]
+                    if us_str != 'N/A':
+                        current_time = float(us_str) / 1000000.0
+                        pct = (current_time / duration) * 100
+                        callback(f"Compressing... ({min(pct, 100):.1f}%)")
+                except ValueError:
+                    pass
+                    
+        await process.wait()
         
         if process.returncode == 0 and os.path.exists(output_path):
             return True
         else:
-            logger.error(f"ffmpeg error: {stderr.decode()}")
+            stderr = await process.stderr.read()
+            logger.error(f"ffmpeg error: {stderr.decode('utf-8', errors='ignore')}")
             return False
     except Exception as e:
         logger.error(f"Exception running ffmpeg: {e}")
         return False
 
-async def process_and_compress(url: str, target_size_mb: float = 9.5) -> str:
+async def process_and_compress(url: str, target_size_mb: float = 9.5, callback=None) -> str:
     """
     Downloads and compresses the video.
     Returns the path to the compressed video if successful, else None.
@@ -134,13 +158,13 @@ async def process_and_compress(url: str, target_size_mb: float = 9.5) -> str:
     compressed_path = os.path.join(temp_dir, f"compressed_{uid}.mp4")
     
     direct_url = await get_direct_video_url(url)
-    success = await download_video(direct_url, raw_path)
+    success = await download_video(direct_url, raw_path, callback)
     if not success:
         if os.path.exists(raw_path):
             os.remove(raw_path)
         return None
         
-    success = await compress_video(raw_path, compressed_path, target_size_mb)
+    success = await compress_video(raw_path, compressed_path, target_size_mb, callback)
     
     # Delete the raw video right after compression
     if os.path.exists(raw_path):

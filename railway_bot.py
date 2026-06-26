@@ -601,13 +601,17 @@ async def on_message(message):
               await reply_msg.edit(content=f"{anim_frame} [Status] Finalizing video upload to o!rdr CDN...")
               continue
               
+            state = {"status_text": "Starting download..."}
+            def on_progress(text):
+              state["status_text"] = text
+
             c_anim_idx = 0
-            compression_task = asyncio.create_task(process_and_compress(video_url))
+            compression_task = asyncio.create_task(process_and_compress(video_url, callback=on_progress))
             while not compression_task.done():
               c_anim_frame = anim_frames[c_anim_idx % len(anim_frames)]
               c_anim_idx += 1
               try:
-                await reply_msg.edit(content=f"{c_anim_frame} [Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
+                await reply_msg.edit(content=f"{c_anim_frame} [Status] {state['status_text']}")
               except Exception:
                 pass
               for _ in range(30):
