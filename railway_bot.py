@@ -629,7 +629,36 @@ async def recent(ctx, *, riot_id: str = None):
     score = stats["score"]
     
     current_rank = stats["rank_name"]
-    tracker_score = stats["tracker_score"]
+    s_tracker_score = stats["season_tracker_score"]
+    m_tracker_score = stats["match_tracker_score"]
+    
+    # Delta Math (KDR)
+    s_kills, s_deaths = stats["s_kills"], stats["s_deaths"]
+    current_kdr = s_kills / max(s_deaths, 1)
+    p_kills = s_kills - kills
+    p_deaths = s_deaths - deaths
+    prev_kdr = p_kills / max(p_deaths, 1)
+    kdr_delta = current_kdr - prev_kdr
+    
+    # Delta Math (Winrate)
+    s_matches, s_wins = stats["s_matches"], stats["s_wins"]
+    m_win = 1 if stats["has_won"] else 0
+    current_wr = (s_wins / max(s_matches, 1)) * 100
+    p_matches = s_matches - 1
+    p_wins = s_wins - m_win
+    prev_wr = (p_wins / max(p_matches, 1)) * 100 if p_matches > 0 else 0
+    wr_delta = current_wr - prev_wr
+    
+    # Delta Math (HS%)
+    s_hs, s_body, s_leg = stats["s_hs"], stats["s_body"], stats["s_leg"]
+    m_hs, m_body, m_leg = stats["m_hs"], stats["m_body"], stats["m_leg"]
+    s_total = s_hs + s_body + s_leg
+    current_hs = (s_hs / max(s_total, 1)) * 100
+    
+    p_hs = s_hs - m_hs
+    p_total = s_total - (m_hs + m_body + m_leg)
+    prev_hs = (p_hs / max(p_total, 1)) * 100
+    hs_delta = current_hs - prev_hs
     
     # Win/Loss formatting
     win_status = stats["result"]
@@ -647,15 +676,21 @@ async def recent(ctx, *, riot_id: str = None):
     )
     
     embed.add_field(name="Agent", value=agent, inline=True)
-    embed.add_field(name="K/D/A", value=f"{kills} / {deaths} / {assists}", inline=True)
+    embed.add_field(name="Match K/D/A", value=f"{kills} / {deaths} / {assists}", inline=True)
+    embed.add_field(name="Match Score", value=str(score), inline=True)
     
-    kd = kills / max(deaths, 1)
-    embed.add_field(name="K/D Ratio", value=f"{kd:.2f}", inline=True)
+    def fmt_delta(val, is_pct=False):
+      sign = "+" if val > 0 else ""
+      pct = "%" if is_pct else ""
+      return f"{sign}{val:.2f}{pct}"
     
-    embed.add_field(name="Combat Score", value=str(score), inline=True)
+    embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
+    embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
+    embed.add_field(name="Season Winrate", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
     
-    if tracker_score:
-      embed.add_field(name="Tracker Score", value=str(tracker_score), inline=True)
+    # Tracker Score formatting (Match vs Season Avg)
+    if m_tracker_score and s_tracker_score:
+      embed.add_field(name="Tracker Score", value=f"**{m_tracker_score}** Match | **{s_tracker_score}** Season Avg", inline=False)
       
     if current_rank != "Unranked":
       embed.add_field(name="Rank", value=current_rank, inline=True)

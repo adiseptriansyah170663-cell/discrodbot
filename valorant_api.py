@@ -48,6 +48,17 @@ async def get_valorant_stats(name: str, tag: str) -> dict:
     except Exception:
         pass
         
+    # Extract Season Stats for Delta Math
+    s_stats = profile_data["segments"][0]["stats"]
+    s_kills = s_stats.get("kills", {}).get("value", 0)
+    s_deaths = s_stats.get("deaths", {}).get("value", 0)
+    s_matches = s_stats.get("matchesPlayed", {}).get("value", 0)
+    s_wins = s_stats.get("matchesWon", {}).get("value", 0)
+    
+    s_hs = s_stats.get("dealtHeadshots", {}).get("value", 0)
+    s_body = s_stats.get("dealtBodyshots", {}).get("value", 0)
+    s_leg = s_stats.get("dealtLegshots", {}).get("value", 0)
+    
     # 2. Fetch Latest Match
     matches_url = f"https://api.tracker.gg/api/v2/valorant/standard/matches/riot/{player_id}?type=competitive"
     match_res = await fetch_tracker_url(matches_url)
@@ -74,10 +85,17 @@ async def get_valorant_stats(name: str, tag: str) -> dict:
         agent = seg.get("metadata", {}).get("agentName", "Unknown Agent")
         agent_image = seg.get("metadata", {}).get("agentImageUrl", "")
         
+        # Match Stats
         kills = stats.get("kills", {}).get("value", 0)
         deaths = stats.get("deaths", {}).get("value", 0)
         assists = stats.get("assists", {}).get("value", 0)
         score = stats.get("score", {}).get("value", 0)
+        
+        m_hs = stats.get("dealtHeadshots", {}).get("value", 0)
+        m_body = stats.get("dealtBodyshots", {}).get("value", 0)
+        m_leg = stats.get("dealtLegshots", {}).get("value", 0)
+        
+        match_tracker_score = stats.get("trnPerformanceScore", {}).get("value")
         
         # Win/Loss rounds
         rounds_won = stats.get("roundsWon", {}).get("value", 0)
@@ -92,7 +110,12 @@ async def get_valorant_stats(name: str, tag: str) -> dict:
     
     return {
         "status": 200,
-        "tracker_score": tracker_score,
+        "season_tracker_score": tracker_score,
+        "match_tracker_score": match_tracker_score,
+        "s_kills": s_kills, "s_deaths": s_deaths,
+        "s_matches": s_matches, "s_wins": s_wins,
+        "s_hs": s_hs, "s_body": s_body, "s_leg": s_leg,
+        "m_hs": m_hs, "m_body": m_body, "m_leg": m_leg,
         "match": match,
         "agent": agent,
         "agent_image": agent_image,
