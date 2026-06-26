@@ -74,34 +74,79 @@ FFMPEG_OPTS = {
     'options': '-vn',
 }
 
-# OAuth2 cache directory (persists token between yt-dlp calls within a container)
-YTDL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.ytdl_cache')
-os.makedirs(YTDL_CACHE_DIR, exist_ok=True)
+# ---------- Piped API (YouTube proxy, no auth needed) ----------
+import urllib.request
+import json as _json
+import re as _re
+
+PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.adminforge.de',
+    'https://pipedapi.in.projectsegfau.lt',
+    'https://api.piped.yt',
+]
 
 
+def extract_video_id(url: str) -> str:
+    """Extract YouTube video ID from various URL formats"""
+    patterns = [
+        r'(?:v=|/v/|youtu\.be/)([a-zA-Z0-9_-]{11})',
+        r'(?:embed|shorts)/([a-zA-Z0-9_-]{11})',
+    ]
+    for pattern in patterns:
+        match = _re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return ''
+
+
+def fetch_piped_stream(video_id: str) -> dict:
+    """Fetch audio stream URL from Piped API instances (tried in order)"""
+    for instance in PIPED_INSTANCES:
+        try:
+            api_url = f'{instance}/streams/{video_id}'
+            req = urllib.request.Request(api_url)
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read().decode())
+
+            audio_streams = data.get('audioStreams', [])
+            if not audio_streams:
+                logger.warning(f'Piped {instance}: no audio streams')
+                continue
+
+            # Pick highest bitrate audio stream
+            best = max(audio_streams, key=lambda s: s.get('bitrate', 0))
+            logger.info(f'Piped {instance}: got stream ({best.get("quality", "?")})')
+            return {
+                'url': best['url'],
+                'title': data.get('title', 'Unknown'),
+                'webpage_url': f'https://www.youtube.com/watch?v={video_id}',
+                'duration': data.get('duration', 0),
+            }
+        except Exception as e:
+            logger.warning(f'Piped {instance} failed: {e}')
+            continue
+
+    return None
+
+
+# ---------- yt-dlp fallback instances ----------
 def get_ytdl_instances():
-    """Mengembalikan beberapa konfigurasi yt-dlp untuk mencoba bypass blokir.
-    Prioritas: OAuth2 > Cookies > Tanpa auth."""
+    """yt-dlp fallback instances (cookies + mobile client). Used when Piped fails."""
     has_cookies = os.path.exists('cookies.txt')
     instances = []
 
-    # 1. OAuth2 device auth (paling reliable untuk server/datacenter IP)
-    opts1 = YTDL_BASE_OPTS.copy()
-    opts1['username'] = 'oauth2'
-    opts1['password'] = ''
-    opts1['cachedir'] = YTDL_CACHE_DIR
-    instances.append(yt_dlp.YoutubeDL(opts1))
-
-    # 2. Cookies fallback (jika OAuth2 belum di-setup)
+    # 1. Cookies (may work if YouTube hasn't flagged the session)
     if has_cookies:
-        opts2 = YTDL_BASE_OPTS.copy()
-        opts2['cookiefile'] = 'cookies.txt'
-        instances.append(yt_dlp.YoutubeDL(opts2))
+        opts1 = YTDL_BASE_OPTS.copy()
+        opts1['cookiefile'] = 'cookies.txt'
+        instances.append(yt_dlp.YoutubeDL(opts1))
 
-    # 3. No auth dengan mobile client (last resort)
-    opts3 = YTDL_BASE_OPTS.copy()
-    opts3['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'MWEB']}}
-    instances.append(yt_dlp.YoutubeDL(opts3))
+    # 2. Mobile client tanpa auth (last resort)
+    opts2 = YTDL_BASE_OPTS.copy()
+    opts2['extractor_args'] = {'youtube': {'client': ['ANDROID_MUSIC', 'MWEB']}}
+    instances.append(yt_dlp.YoutubeDL(opts2))
 
     return instances
 
@@ -140,6 +185,14 @@ class Track:
     async def from_query(cls, query, requester, loop):
         """Extract track info from YouTube with multi-fallback (for URLs/playlists)"""
         def extract():
+            # Try Piped API for single video URLs first
+            video_id = extract_video_id(query)
+            if video_id:
+                logger.info(f'from_query trying Piped API for: {query}')
+                piped_data = fetch_piped_stream(video_id)
+                if piped_data:
+                    return piped_data
+
             instances = get_ytdl_instances()
             for ytdl in instances:
                 try:
@@ -179,6 +232,14 @@ class Track:
     async def from_url(cls, url, requester, loop):
         """Extract a single track from a URL (full extraction for stream URL)"""
         def extract():
+            # Try Piped API first
+            video_id = extract_video_id(url)
+            if video_id:
+                logger.info(f'from_url trying Piped API for: {url}')
+                piped_data = fetch_piped_stream(video_id)
+                if piped_data:
+                    return piped_data
+
             instances = get_ytdl_instances()
             for i, ytdl in enumerate(instances, 1):
                 try:
@@ -522,66 +583,6 @@ async def on_command_error(ctx, error):
 bot.remove_command('help')
 
 # ---------- Commands ----------
-
-@bot.command(name='auth')
-async def auth_cmd(ctx):
-    """Trigger YouTube OAuth2 device authentication (check Railway logs for URL)"""
-    try:
-        # Only allow bot owner or server admins
-        if not ctx.author.guild_permissions.administrator:
-            await ctx.send('ERROR: Admin only command!')
-            return
-
-        await ctx.send(
-            '🔐 Starting OAuth2 authentication...\n'
-            '**Check Railway logs** for the Google device auth URL and code.\n'
-            'Visit the URL, enter the code, and authorize access.'
-        )
-
-        def do_auth():
-            """Run a test extraction to trigger OAuth2 device flow"""
-            opts = YTDL_BASE_OPTS.copy()
-            opts['username'] = 'oauth2'
-            opts['password'] = ''
-            opts['cachedir'] = YTDL_CACHE_DIR
-            # Enable verbose output so auth URL shows in logs
-            opts['quiet'] = False
-            opts['no_warnings'] = False
-            opts['verbose'] = True
-            try:
-                with yt_dlp.YoutubeDL(opts) as ytdl:
-                    # Use a known short public video for testing
-                    data = ytdl.extract_info(
-                        'https://www.youtube.com/watch?v=BaW_jenozKc',
-                        download=False
-                    )
-                    if data and data.get('url'):
-                        return True
-                    return False
-            except Exception as e:
-                logger.error(f'OAuth2 auth error: {e}')
-                return False
-
-        logger.info('=== OAUTH2 DEVICE AUTH STARTED - CHECK LOGS FOR URL ===')
-        result = await asyncio.wait_for(
-            bot.loop.run_in_executor(None, do_auth),
-            timeout=120  # Give user 2 minutes to complete device auth
-        )
-
-        if result:
-            await ctx.send('✅ OAuth2 authentication successful! Bot can now play YouTube audio.')
-        else:
-            await ctx.send(
-                '⚠️ Authentication may not have completed.\n'
-                'Check Railway logs for the auth URL and try again.'
-            )
-    except asyncio.TimeoutError:
-        await ctx.send('⏰ Auth timed out (2 min). Run `!auth` again and complete faster.')
-    except Exception as e:
-        logger.error(f'Auth command error: {e}')
-        await ctx.send(f'ERROR: {str(e)[:100]}')
-
-
 @bot.command(name='hello')
 async def hello(ctx):
     """Say hello"""
@@ -961,7 +962,6 @@ async def commands_cmd(ctx):
             ('clear', 'Clear queue'),
             ('hello', 'Say hello'),
             ('roll [max]', 'Roll number'),
-            ('auth', 'Setup YouTube OAuth2 (admin only)'),
             ('commands', 'Show this message'),
         ]
         
