@@ -601,8 +601,21 @@ async def on_message(message):
               await reply_msg.edit(content=f"{anim_frame} [Status] Finalizing video upload to o!rdr CDN...")
               continue
               
-            await reply_msg.edit(content="[Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
-            compressed_path = await process_and_compress(video_url)
+            c_anim_idx = 0
+            compression_task = asyncio.create_task(process_and_compress(video_url))
+            while not compression_task.done():
+              c_anim_frame = anim_frames[c_anim_idx % len(anim_frames)]
+              c_anim_idx += 1
+              try:
+                await reply_msg.edit(content=f"{c_anim_frame} [Downloading] Render complete! Compressing video to 10MB (this may take a minute)...")
+              except Exception:
+                pass
+              for _ in range(30):
+                if compression_task.done():
+                  break
+                await asyncio.sleep(0.1)
+                
+            compressed_path = compression_task.result()
             if compressed_path:
               try:
                 await message.channel.send(
