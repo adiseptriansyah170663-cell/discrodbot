@@ -51,11 +51,14 @@ YTDL_BASE_OPTS = {
     'noplaylist': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch',
+    'default_search': 'ytsearch5',
     'ignoreerrors': True,
     'socket_timeout': 30,
     'skip_download': True,
 }
+
+# Timeout for search selection (seconds)
+SEARCH_TIMEOUT = 30
 
 FFMPEG_OPTS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -155,6 +158,100 @@ class Track:
             entries = [data] if data.get('url') else []
         
         return [cls(e, requester) for e in entries]
+
+
+def is_url(query: str) -> bool:
+    """Check if a query is a URL"""
+    return query.startswith(('http://', 'https://'))
+
+
+def format_duration(seconds):
+    """Format duration to MM:SS"""
+    if not seconds:
+        return ''
+    mins, secs = divmod(int(seconds), 60)
+    return f'({mins}:{secs:02d})'
+
+
+class SearchSelect(discord.ui.Select):
+    """Dropdown menu for selecting a search result"""
+
+    def __init__(self, tracks: list, requester):
+        self.tracks = tracks
+        self.requester = requester
+        options = []
+        for i, track in enumerate(tracks[:5]):
+            dur = format_duration(track.duration)
+            label = track.title[:100]  # Discord label max is 100 chars
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(i),
+                    description=f'#{i+1} {dur}'.strip(),
+                    emoji=['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
+                )
+            )
+        super().__init__(
+            placeholder='Pick a song...',
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        idx = int(self.values[0])
+        selected_track = self.tracks[idx]
+        self.view.selected_track = selected_track
+        self.view.stop()
+
+        # Acknowledge and update the message
+        embed = discord.Embed(
+            title='✅ Song Selected',
+            description=f'**{selected_track.title}** {format_duration(selected_track.duration)}',
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class CancelButton(discord.ui.Button):
+    """Cancel button for search view"""
+
+    def __init__(self):
+        super().__init__(label='Cancel', style=discord.ButtonStyle.secondary, emoji='❌')
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_track = None
+        self.view.stop()
+        embed = discord.Embed(
+            title='❌ Search Cancelled',
+            color=discord.Color.greyple()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class SearchView(discord.ui.View):
+    """View with dropdown + cancel for search results"""
+
+    def __init__(self, tracks: list, requester, author_id: int):
+        super().__init__(timeout=SEARCH_TIMEOUT)
+        self.selected_track = None
+        self.author_id = author_id
+        self.add_item(SearchSelect(tracks, requester))
+        self.add_item(CancelButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only the command author can interact"""
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                'Only the person who searched can select!', ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        """Disable all items on timeout"""
+        self.selected_track = None
+        self.stop()
 
 
 class GuildPlayer:
@@ -390,7 +487,7 @@ async def leave(ctx):
 
 @bot.command(name='play')
 async def play(ctx, *, query: str):
-    """Play music"""
+    """Play music (shows top 5 results for search queries)"""
     try:
         if ctx.author.voice is None or ctx.author.voice.channel is None:
             await ctx.send('ERROR: Join voice channel first!')
@@ -425,19 +522,146 @@ async def play(ctx, *, query: str):
             await ctx.send('ERROR: No tracks found.')
             return
 
-        player = get_player(ctx)
-        player.queue.extend(tracks)
-        
-        if len(tracks) == 1:
-            duration = player._format_duration(tracks[0].duration)
-            await ctx.send(f'Queued: {tracks[0].title} {duration}')
-        else:
-            await ctx.send(
-                f'Queued {len(tracks)} tracks\n'
-                f'First: {tracks[0].title}'
+        # If it's a URL or playlist, queue directly (no selection needed)
+        if is_url(query):
+            player = get_player(ctx)
+            player.queue.extend(tracks)
+            
+            if len(tracks) == 1:
+                duration = format_duration(tracks[0].duration)
+                await ctx.send(f'Queued: {tracks[0].title} {duration}')
+            else:
+                await ctx.send(
+                    f'Queued {len(tracks)} tracks\n'
+                    f'First: {tracks[0].title}'
+                )
+            return
+
+        # Search query — show top 5 results for user selection
+        results = tracks[:5]
+        embed = discord.Embed(
+            title=f'🔎 Search results for: {query[:200]}',
+            description='Select a song from the dropdown below:',
+            color=discord.Color.blurple()
+        )
+        for i, track in enumerate(results):
+            emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
+            dur = format_duration(track.duration)
+            embed.add_field(
+                name=f'{emoji} {track.title}',
+                value=f'{dur}' if dur else '(unknown duration)',
+                inline=False
             )
+        embed.set_footer(text=f'Select within {SEARCH_TIMEOUT}s or it will be cancelled.')
+
+        view = SearchView(results, ctx.author, ctx.author.id)
+        msg = await ctx.send(embed=embed, view=view)
+
+        # Wait for user selection
+        timed_out = await view.wait()
+
+        if timed_out or view.selected_track is None:
+            if timed_out:
+                timeout_embed = discord.Embed(
+                    title='⏰ Search Timed Out',
+                    description='No song was selected.',
+                    color=discord.Color.greyple()
+                )
+                try:
+                    await msg.edit(embed=timeout_embed, view=None)
+                except Exception:
+                    pass
+            return
+
+        # Queue the selected track
+        selected = view.selected_track
+        player = get_player(ctx)
+        player.queue.append(selected)
+        duration = format_duration(selected.duration)
+        await ctx.send(f'Queued: {selected.title} {duration}')
+
     except Exception as e:
         logger.error(f'Play error: {e}')
+        await ctx.send(f'ERROR: {str(e)[:100]}')
+
+
+@bot.command(name='search')
+async def search(ctx, *, query: str):
+    """Search for a song without auto-queueing"""
+    try:
+        async with ctx.typing():
+            try:
+                logger.info(f'Searching: {query}')
+                tracks = await Track.from_query(
+                    query,
+                    ctx.author,
+                    bot.loop
+                )
+            except Exception as e:
+                logger.error(f'Search error: {e}')
+                await ctx.send(f'ERROR: Failed to search: {str(e)[:100]}')
+                return
+
+        if not tracks:
+            await ctx.send('ERROR: No results found.')
+            return
+
+        results = tracks[:5]
+        embed = discord.Embed(
+            title=f'🔎 Search results for: {query[:200]}',
+            description='Use `!play <URL>` to play a specific result, or select below to queue it.',
+            color=discord.Color.blurple()
+        )
+        for i, track in enumerate(results):
+            emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][i]
+            dur = format_duration(track.duration)
+            url_text = f'[Link]({track.webpage_url})' if track.webpage_url else ''
+            embed.add_field(
+                name=f'{emoji} {track.title}',
+                value=f'{dur} {url_text}'.strip() or '(unknown)',
+                inline=False
+            )
+        embed.set_footer(text=f'Select within {SEARCH_TIMEOUT}s or it will be cancelled.')
+
+        # Only allow queueing if user is in a voice channel
+        if ctx.author.voice and ctx.author.voice.channel:
+            view = SearchView(results, ctx.author, ctx.author.id)
+            msg = await ctx.send(embed=embed, view=view)
+
+            timed_out = await view.wait()
+            if timed_out or view.selected_track is None:
+                if timed_out:
+                    timeout_embed = discord.Embed(
+                        title='⏰ Search Timed Out',
+                        description='No song was selected.',
+                        color=discord.Color.greyple()
+                    )
+                    try:
+                        await msg.edit(embed=timeout_embed, view=None)
+                    except Exception:
+                        pass
+                return
+
+            selected = view.selected_track
+
+            # Auto-join voice if not already connected
+            if ctx.voice_client is None:
+                try:
+                    await safe_voice_connect(ctx.author.voice.channel)
+                except Exception as e:
+                    await ctx.send(f'ERROR: Failed to join voice: {str(e)[:100]}')
+                    return
+
+            player = get_player(ctx)
+            player.queue.append(selected)
+            duration = format_duration(selected.duration)
+            await ctx.send(f'Queued: {selected.title} {duration}')
+        else:
+            # Not in voice — just show results
+            await ctx.send(embed=embed)
+
+    except Exception as e:
+        logger.error(f'Search error: {e}')
         await ctx.send(f'ERROR: {str(e)[:100]}')
 
 
@@ -551,7 +775,8 @@ async def commands_cmd(ctx):
         commands_list = [
             ('join', 'Join voice channel'),
             ('leave', 'Leave voice channel'),
-            ('play <query>', 'Play music'),
+            ('play <query>', 'Search & pick from top 5, or play URL directly'),
+            ('search <query>', 'Search top 5 without auto-queueing'),
             ('pause', 'Pause'),
             ('resume', 'Resume'),
             ('skip', 'Skip track'),
