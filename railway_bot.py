@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands
 import yt_dlp
 from ordr_integration import ordr_manager
+from video_compressor import process_and_compress
 
 # Load environment variables
 load_dotenv()
@@ -589,8 +590,27 @@ async def on_message(message):
                     
                     progress = status.get("progress", "")
                     if progress == "Done":
-                        video_url = status.get("videoUrl", "No URL provided")
-                        await reply_msg.edit(content=f"✅ Render complete!\n{video_url}")
+                        video_url = status.get("videoUrl", "")
+                        if video_url:
+                            await reply_msg.edit(content="📥 Render complete! Downloading & Compressing video to 10MB (this may take a minute)...")
+                            compressed_path = await process_and_compress(video_url)
+                            if compressed_path:
+                                try:
+                                    await message.channel.send(
+                                        content=f"✅ Here is your rendered replay ({attachment.filename}):",
+                                        file=discord.File(compressed_path)
+                                    )
+                                    await reply_msg.delete()
+                                except Exception as e:
+                                    logger.error(f"Failed to upload video: {e}")
+                                    await reply_msg.edit(content=f"❌ Failed to upload compressed video. It might still be too large. Link: {video_url}")
+                                finally:
+                                    if os.path.exists(compressed_path):
+                                        os.remove(compressed_path)
+                            else:
+                                await reply_msg.edit(content=f"❌ Compression failed! Raw video link: {video_url}")
+                        else:
+                            await reply_msg.edit(content="✅ Render complete, but no video URL was provided.")
                         break
                     elif progress == "Error":
                         await reply_msg.edit(content="❌ Render failed due to an error on the o!rdr cluster.")
