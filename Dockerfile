@@ -11,6 +11,12 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libsodium-dev \
     nodejs \
+    xvfb \
+    libgl1-mesa-dri \
+    libasound2 \
+    wget \
+    unzip \
+    tar \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
