@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 async def get_direct_video_url(url: str) -> str:
     """If the URL is a link.issou.best wrapper, fetch the actual mp4 from og:video."""
     if "link.issou.best" in url:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        # We MUST use a crawler User-Agent (like Discordbot or Python-urllib) 
+        # so the server returns the metadata HTML instead of HTTP redirecting to the web player.
+        headers = {"User-Agent": "Discordbot/2.0"}
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url) as response:
