@@ -153,11 +153,10 @@ class DanserManager:
                 return None
                 
             logger.info("Starting xvfb-run danser...")
-            # Running headless via xvfb
-            cmd = ['xvfb-run', '-s', '-screen 0 1920x1080x24', './danser', '-replay', osr_path, '-record', '-out', out_name]
+            cmd = f'xvfb-run -a -s "-screen 0 1920x1080x24" ./danser -replay "{osr_path}" -record -out "{out_name}"'
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
+            process = await asyncio.create_subprocess_shell(
+                cmd,
                 cwd=self.danser_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
