@@ -302,7 +302,7 @@ class CancelButton(discord.ui.Button):
     """Cancel button for search view"""
 
     def __init__(self):
-        super().__init__(label='Cancel', style=discord.ButtonStyle.secondary, emoji='')
+        super().__init__(label='Cancel', style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_track = None
