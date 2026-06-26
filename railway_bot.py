@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
+import valorant_api
 
 # Load environment variables
 load_dotenv()
@@ -601,6 +602,81 @@ async def hello(ctx):
     await ctx.send(f'Hello {ctx.author.mention}!')
   except Exception as e:
     logger.error(f'Hello command error: {e}')
+
+@bot.command(name='recent')
+async def recent(ctx, *, riot_id: str = None):
+  """Fetch recent Valorant match and stats (e.g. !recent TenZ#0303)"""
+  if not riot_id or '#' not in riot_id:
+    await ctx.send("Please provide a valid Riot ID! Example: `!recent TenZ#0303`")
+    return
+    
+  name, tag = riot_id.split('#', 1)
+  name = name.strip()
+  tag = tag.strip()
+  
+  msg = await ctx.send(f"Fetching recent match data for **{name}#{tag}**...")
+  
+  try:
+    stats = await valorant_api.get_valorant_stats(name, tag)
+    if stats["status"] != 200:
+      await msg.edit(content=f"Error fetching data: {stats.get('error', 'Unknown error')}")
+      return
+      
+    match = stats["match"]
+    player = stats["player_stats"]
+    mmr = stats["mmr"]
+    
+    # Format match data
+    map_name = match.get("metadata", {}).get("map", "Unknown Map")
+    mode = match.get("metadata", {}).get("mode", "Unknown Mode")
+    agent = stats["agent"]
+    
+    kills = player.get("kills", 0)
+    deaths = player.get("deaths", 0)
+    assists = player.get("assists", 0)
+    score = player.get("score", 0)
+    headshots = player.get("headshots", 0)
+    
+    # Format MMR data
+    current_rank = mmr.get("currenttierpatched", "Unranked")
+    rr_change = mmr.get("mmr_change_to_last_game", 0)
+    rr_sign = "+" if rr_change > 0 else ""
+    
+    # Win/Loss formatting
+    win_status = "WON" if stats["has_won"] else "LOST"
+    rounds_won = stats["rounds_won"]
+    rounds_lost = stats["rounds_lost"]
+    
+    color = discord.Color.green() if stats["has_won"] else discord.Color.red()
+    if rounds_won == rounds_lost:
+      win_status = "DRAW"
+      color = discord.Color.light_gray()
+      
+    embed = discord.Embed(
+      title=f"Recent Match: {name}#{tag}",
+      description=f"**{win_status}** ({rounds_won} - {rounds_lost}) on **{map_name}** ({mode})",
+      color=color
+    )
+    
+    embed.add_field(name="Agent", value=agent, inline=True)
+    embed.add_field(name="K/D/A", value=f"{kills} / {deaths} / {assists}", inline=True)
+    
+    kd = kills / max(deaths, 1)
+    embed.add_field(name="K/D Ratio", value=f"{kd:.2f}", inline=True)
+    
+    embed.add_field(name="Combat Score", value=str(score), inline=True)
+    embed.add_field(name="Headshots", value=str(headshots), inline=True)
+    
+    if current_rank != "Unranked":
+      embed.add_field(name="Rank Update", value=f"{current_rank} ({rr_sign}{rr_change} RR)", inline=False)
+      
+    embed.set_footer(text="Data provided by HenrikDev API")
+    
+    await msg.edit(content="", embed=embed)
+    
+  except Exception as e:
+    logger.error(f"Error in recent command: {e}")
+    await msg.edit(content=f"An error occurred while fetching the stats.")
 
 
 @bot.command(name='roll')

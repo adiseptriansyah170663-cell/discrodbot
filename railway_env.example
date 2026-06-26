@@ -4,3 +4,6 @@ DISCORD_TOKEN=your_bot_token_here
 
 # FFmpeg Path (usually not needed - Railway has it pre-installed)
 # FFMPEG_PATH=/usr/bin/ffmpeg
+
+# HenrikDev Valorant API Key (Get from: https://docs.henrikdev.xyz/)
+HENRIK_API_KEY=your_henrik_api_key_here
