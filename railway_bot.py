@@ -647,9 +647,15 @@ async def mlbb_draft(ctx, lane: str, *enemies):
 
 
 @mlbb_cmd.command(name='simulate')
-async def mlbb_simulate(ctx):
-    """Start an interactive Draft Simulator session"""
-    session = DraftSession(owner_id=ctx.author.id)
+async def mlbb_simulate(ctx, rank: str = "epic"):
+    """Start an interactive Draft Simulator session. Rank can be epic, legend, or mythic."""
+    valid_ranks = ["epic", "legend", "mythic"]
+    rank = rank.lower()
+    if rank not in valid_ranks:
+        await ctx.send(f"Invalid rank '{rank}'. Please choose from: {', '.join(valid_ranks)}")
+        return
+        
+    session = DraftSession(owner_id=ctx.author.id, rank=rank)
     view = DraftView(session)
     embed = session.generate_embed()
     

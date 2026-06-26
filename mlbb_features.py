@@ -54,12 +54,19 @@ class MLBBService:
         matches = [h for name, h in self.heroes.items() if query in name]
         if len(matches) == 1:
             return matches[0]
-        # Return exact prefix match if multiple (e.g. "chu" -> "chou" instead of returning None? We'll just return the first one that starts with)
+            
+        # Return exact prefix match if multiple
         for h in matches:
             if h["hero_name"].lower().startswith(query):
                 return h
                 
         return None
+
+    def get_all_hero_names(self) -> List[str]:
+        """Returns a sorted list of all hero names"""
+        if not self._data_loaded:
+            return []
+        return sorted([hero.get("hero_name") for hero in self.heroes.values() if hero.get("hero_name")])
 
     def get_heroes_by_lane(self, lane: str) -> List[dict]:
         """Get all heroes that can play a specific lane"""
