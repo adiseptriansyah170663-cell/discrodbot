@@ -57,8 +57,8 @@ class DanserManager:
         }
         
         mirrors = [
-            ("catboy.best", f"https://catboy.best/api/v2/search?hash={beatmap_hash}", "https://catboy.best/api/v2/d/"),
-            ("osu.direct", f"https://osu.direct/api/v2/search?hash={beatmap_hash}", "https://osu.direct/api/v2/d/")
+            ("catboy.best", f"https://catboy.best/api/v2/search?hash={beatmap_hash}", "https://catboy.best/d/"),
+            ("osu.direct", f"https://osu.direct/api/v2/search?hash={beatmap_hash}", "https://osu.direct/d/")
         ]
         
         for name, search_url, download_url_prefix in mirrors:
