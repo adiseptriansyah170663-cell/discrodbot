@@ -68,3 +68,6 @@ coverage.xml
 # Temp files
 *.tmp
 temp/
+
+# yt-dlp OAuth2 cache
+.ytdl_cache/
