@@ -79,7 +79,7 @@ class OrdrManager:
                            replay_file_bytes,
                            filename='replay.osr',
                            content_type='application/octet-stream')
-            data.add_field('resolution', '1920x1080')
+            data.add_field('resolution', '1280x720')
             data.add_field('skin', str(skin_id) if skin_id else '1')
             
             async with aiohttp.ClientSession() as session:
