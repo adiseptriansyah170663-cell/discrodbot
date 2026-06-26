@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
-from danser_manager import danser_manager
-import os
+from ordr_integration import ordr_manager
+from video_compressor import process_and_compress
 
 # Load environment variables
 load_dotenv()
@@ -567,30 +567,59 @@ async def on_message(message):
     # Check for .osr attachments
     for attachment in message.attachments:
         if attachment.filename.endswith('.osr'):
-            reply_msg = await message.reply("[Detected osu! replay] Starting in-house rendering engine (this will take a while)...")
+            reply_msg = await message.reply("🔄 Detected osu! replay! Submitting to o!rdr for 1080p rendering...")
             
             # Download file
             file_bytes = await attachment.read()
             
-            # Submit render
-            await reply_msg.edit(content="[Status] Parsing replay, downloading beatmap, and rendering video (expect ~15-30 mins)...")
-            rendered_path = await danser_manager.process_replay(file_bytes)
+            # Get user skin
+            skin_id = ordr_manager.get_user_skin(str(message.author.id))
             
-            if rendered_path and os.path.exists(rendered_path):
-                try:
-                    await message.channel.send(
-                        content=f"[Done] Here is your natively rendered replay ({attachment.filename}):",
-                        file=discord.File(rendered_path)
-                    )
-                    await reply_msg.delete()
-                except Exception as e:
-                    logger.error(f"Failed to upload video: {e}")
-                    await reply_msg.edit(content=f"[Error] Failed to upload video. It might exceed Discord's file limits.")
-                finally:
-                    if os.path.exists(rendered_path):
-                        os.remove(rendered_path)
+            # Submit render
+            result = await ordr_manager.submit_render(file_bytes, skin_id)
+            if result.get("http_status", 500) == 201 or result.get("errorCode") == 0:
+                render_id = result.get("renderID")
+                await reply_msg.edit(content=f"⏳ Render job created! (ID: {render_id}). Waiting for cluster...")
+                
+                # Poll status
+                while True:
+                    await asyncio.sleep(5)
+                    status = await ordr_manager.check_render_status(render_id)
+                    if not status:
+                        continue
+                    
+                    progress = status.get("progress", "")
+                    if progress == "Done":
+                        video_url = status.get("videoUrl", "")
+                        if video_url:
+                            await reply_msg.edit(content="📥 Render complete! Downloading & Compressing video to 10MB (this may take a minute)...")
+                            compressed_path = await process_and_compress(video_url)
+                            if compressed_path:
+                                try:
+                                    await message.channel.send(
+                                        content=f"✅ Here is your rendered replay ({attachment.filename}):",
+                                        file=discord.File(compressed_path)
+                                    )
+                                    await reply_msg.delete()
+                                except Exception as e:
+                                    logger.error(f"Failed to upload video: {e}")
+                                    await reply_msg.edit(content=f"❌ Failed to upload compressed video. It might still be too large. Link: {video_url}")
+                                finally:
+                                    if os.path.exists(compressed_path):
+                                        os.remove(compressed_path)
+                            else:
+                                await reply_msg.edit(content=f"❌ Compression failed! Raw video link: {video_url}")
+                        else:
+                            await reply_msg.edit(content="✅ Render complete, but no video URL was provided.")
+                        break
+                    elif progress == "Error":
+                        await reply_msg.edit(content="❌ Render failed due to an error on the o!rdr cluster.")
+                        break
+                    else:
+                        description = status.get("description", progress)
+                        await reply_msg.edit(content=f"⏳ Render status: {description}")
             else:
-                await reply_msg.edit(content="[Error] Rendering failed! Check bot logs for details.")
+                await reply_msg.edit(content=f"❌ Failed to submit render to o!rdr: {result.get('message', 'Unknown error')}")
 
     # Process other commands
     await bot.process_commands(message)
@@ -623,6 +652,33 @@ async def on_command_error(ctx, error):
 bot.remove_command('help')
 
 # ---------- Commands ----------
+
+@bot.group(name='skin', invoke_without_command=True)
+async def skin_cmd(ctx):
+    """Ordr Skin commands (use !skin list or !skin set <id>)"""
+    await ctx.send("Use `!skin list` to see popular skins, or `!skin set <id>` to set your preferred rendering skin.")
+
+@skin_cmd.command(name='list')
+async def skin_list(ctx):
+    msg = await ctx.send("Fetching skins from o!rdr...")
+    skins = await ordr_manager.fetch_available_skins(page_size=20)
+    if not skins:
+        await msg.edit(content="Failed to fetch skins.")
+        return
+        
+    embed = discord.Embed(title="Top 20 osu! Skins (o!rdr)", color=discord.Color.blue())
+    for s in skins:
+        embed.add_field(name=f"ID: {s.get('id')}", value=s.get('presentationName', 'Unknown'), inline=True)
+        
+    embed.set_footer(text="Use !skin set <id> to choose your skin.")
+    await msg.edit(content="", embed=embed)
+
+@skin_cmd.command(name='set')
+async def skin_set(ctx, skin_id: int):
+    ordr_manager.set_user_skin(str(ctx.author.id), skin_id)
+    await ctx.send(f"✅ Your preferred rendering skin has been set to ID {skin_id}!")
+
+
 @bot.command(name='hello')
 async def hello(ctx):
     """Say hello"""
@@ -1002,6 +1058,8 @@ async def commands_cmd(ctx):
             ('clear', 'Clear queue'),
             ('hello', 'Say hello'),
             ('roll [max]', 'Roll number'),
+            ('skin list', 'List available osu! skins for rendering'),
+            ('skin set <id>', 'Set your preferred rendering skin'),
             ('commands', 'Show this message'),
         ]
         

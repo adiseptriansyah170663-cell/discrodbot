@@ -1,7 +1,1 @@
 ffmpeg
-xvfb
-libgl1-mesa-dri
-libasound2
-wget
-unzip
-tar
