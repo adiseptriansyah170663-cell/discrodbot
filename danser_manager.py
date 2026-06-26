@@ -52,35 +52,52 @@ class DanserManager:
 
     async def download_beatmap(self, beatmap_hash: str) -> bool:
         """Finds and downloads the beatmap set into the Songs folder."""
-        url = f"https://catboy.best/api/v2/search?hash={beatmap_hash}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.error("Failed to find beatmap via API.")
-                    return False
-                
-                data = await resp.json()
-                if not data or len(data) == 0:
-                    logger.error("No beatmap found for hash.")
-                    return False
-                
-                beatmapset_id = data[0].get("id")
-                if not beatmapset_id:
-                    return False
-                
-        osz_url = f"https://catboy.best/api/v2/d/{beatmapset_id}"
-        osz_path = os.path.join(self.songs_dir, f"{beatmapset_id}.osz")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
         
-        if os.path.exists(osz_path):
-            return True
-            
-        logger.info(f"Downloading beatmapset {beatmapset_id}...")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(osz_url) as resp:
-                if resp.status == 200:
-                    with open(osz_path, 'wb') as f:
-                        f.write(await resp.read())
+        mirrors = [
+            ("catboy.best", f"https://catboy.best/api/v2/search?hash={beatmap_hash}", "https://catboy.best/api/v2/d/"),
+            ("osu.direct", f"https://osu.direct/api/v2/search?hash={beatmap_hash}", "https://osu.direct/api/v2/d/")
+        ]
+        
+        for name, search_url, download_url_prefix in mirrors:
+            try:
+                logger.info(f"Trying mirror {name} for beatmap hash...")
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(search_url, timeout=10) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Mirror {name} returned status {resp.status}")
+                            continue
+                        
+                        data = await resp.json()
+                        if not data or len(data) == 0:
+                            logger.warning(f"Mirror {name} found no map.")
+                            continue
+                        
+                        beatmapset_id = data[0].get("id")
+                        if not beatmapset_id:
+                            continue
+                        
+                osz_url = f"{download_url_prefix}{beatmapset_id}"
+                osz_path = os.path.join(self.songs_dir, f"{beatmapset_id}.osz")
+                
+                if os.path.exists(osz_path):
                     return True
+                    
+                logger.info(f"Downloading beatmapset {beatmapset_id} from {name}...")
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(osz_url, timeout=30) as resp:
+                        if resp.status == 200:
+                            with open(osz_path, 'wb') as f:
+                                f.write(await resp.read())
+                            return True
+                        else:
+                            logger.error(f"Failed to download osz from {name}. Status: {resp.status}")
+                            
+            except Exception as e:
+                logger.error(f"Error using mirror {name}: {e}")
+                
         return False
 
     async def generate_settings(self):
