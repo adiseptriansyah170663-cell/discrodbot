@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 import yt_dlp
+from mlbb_features import mlbb_service
 
 # Load environment variables
 load_dotenv()
@@ -561,6 +562,10 @@ async def on_ready():
     """Bot ready event"""
     logger.info(f'Bot logged in as {bot.user.name}')
     logger.info(f'Connected to {len(bot.guilds)} server(s)')
+    
+    # Load MLBB data
+    await mlbb_service.fetch_data()
+    
     await bot.change_presence(
         activity=discord.Game(name='!help for commands')
     )
@@ -583,6 +588,63 @@ async def on_command_error(ctx, error):
 bot.remove_command('help')
 
 # ---------- Commands ----------
+
+@bot.group(name='mlbb', invoke_without_command=True)
+async def mlbb_cmd(ctx):
+    """MLBB features (try !mlbb hero <name> or !mlbb draft <lane>)"""
+    await ctx.send("Use `!mlbb hero <name>` or `!mlbb draft <lane> [enemies...]`")
+
+@mlbb_cmd.command(name='hero')
+async def mlbb_hero(ctx, *, hero_name: str):
+    hero = mlbb_service.find_hero(hero_name)
+    if not hero:
+        await ctx.send(f"Hero '{hero_name}' not found!")
+        return
+        
+    embed = discord.Embed(title=hero.get("hero_name", "Unknown"), color=discord.Color.blue())
+    if hero.get("portrait"):
+        embed.set_thumbnail(url=hero["portrait"])
+    
+    embed.add_field(name="Class", value=hero.get("class", "-"), inline=True)
+    embed.add_field(name="Lanes", value=", ".join(hero.get("laning", ["-"])).title(), inline=True)
+    embed.add_field(name="Specialties", value=", ".join(hero.get("speciality", ["-"])), inline=True)
+    
+    counters = [c.get("heroname") for c in hero.get("counters", []) if c.get("heroname")]
+    if counters:
+        embed.add_field(name="Counters", value=", ".join(counters), inline=False)
+        
+    synergies = [s.get("heroname") for s in hero.get("synergies", []) if s.get("heroname")]
+    if synergies:
+        embed.add_field(name="Synergies", value=", ".join(synergies), inline=False)
+        
+    await ctx.send(embed=embed)
+
+@mlbb_cmd.command(name='draft')
+async def mlbb_draft(ctx, lane: str, *enemies):
+    recs = mlbb_service.recommend_draft(lane, list(enemies))
+    if not recs:
+        await ctx.send(f"No recommendations found for lane '{lane}'. (Try: exp lane, gold lane, jungle, mid lane, roam)")
+        return
+        
+    embed = discord.Embed(title=f"Draft Recommendations for {lane.title()}", color=discord.Color.green())
+    if enemies:
+        embed.description = f"**Enemy Matchups:** {', '.join(enemies).title()}"
+        
+    for i, hero in enumerate(recs, 1):
+        name = hero.get("hero_name", "Unknown")
+        counters = [c.get("heroname") for c in hero.get("counters", []) if c.get("heroname")]
+        
+        val = f"Class: {hero.get('class', '-')}"
+        if enemies:
+            matchups = [e.title() for e in enemies if e.lower() in [c.lower() for c in counters]]
+            if matchups:
+                val += f"\nCounters: {', '.join(matchups)}"
+                
+        embed.add_field(name=f"{i}. {name}", value=val, inline=False)
+        
+    await ctx.send(embed=embed)
+
+
 @bot.command(name='hello')
 async def hello(ctx):
     """Say hello"""
@@ -962,6 +1024,8 @@ async def commands_cmd(ctx):
             ('clear', 'Clear queue'),
             ('hello', 'Say hello'),
             ('roll [max]', 'Roll number'),
+            ('mlbb hero <name>', 'Show MLBB hero info'),
+            ('mlbb draft <lane> [enemies]', 'MLBB draft recommendations'),
             ('commands', 'Show this message'),
         ]
         
