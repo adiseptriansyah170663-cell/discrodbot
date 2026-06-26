@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands
 import yt_dlp
 from mlbb_features import mlbb_service
+from draft_simulator import DraftSession, DraftView
 
 # Load environment variables
 load_dotenv()
@@ -645,6 +646,16 @@ async def mlbb_draft(ctx, lane: str, *enemies):
     await ctx.send(embed=embed)
 
 
+@mlbb_cmd.command(name='simulate')
+async def mlbb_simulate(ctx):
+    """Start an interactive Draft Simulator session"""
+    session = DraftSession(owner_id=ctx.author.id)
+    view = DraftView(session)
+    embed = session.generate_embed()
+    
+    view.message = await ctx.send(embed=embed, view=view)
+
+
 @bot.command(name='hello')
 async def hello(ctx):
     """Say hello"""
@@ -1026,6 +1037,7 @@ async def commands_cmd(ctx):
             ('roll [max]', 'Roll number'),
             ('mlbb hero <name>', 'Show MLBB hero info'),
             ('mlbb draft <lane> [enemies]', 'MLBB draft recommendations'),
+            ('mlbb simulate', 'Interactive Draft Simulator'),
             ('commands', 'Show this message'),
         ]
         
