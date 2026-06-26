@@ -4,8 +4,23 @@ import os
 import logging
 import uuid
 import math
+import re
 
 logger = logging.getLogger(__name__)
+
+async def get_direct_video_url(url: str) -> str:
+    """If the URL is a link.issou.best wrapper, fetch the actual mp4 from og:video."""
+    if "link.issou.best" in url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    text = await response.text()
+                    match = re.search(r'<meta property="og:video" content="([^"]+\.mp4)"', text)
+                    if match:
+                        return match.group(1)
+        except Exception as e:
+            logger.error(f"Failed to extract direct video URL: {e}")
+    return url
 
 async def download_video(url: str, filepath: str) -> bool:
     """Download the raw video from a URL."""
@@ -110,7 +125,8 @@ async def process_and_compress(url: str, target_size_mb: float = 9.5) -> str:
     raw_path = os.path.join(temp_dir, f"raw_{uid}.mp4")
     compressed_path = os.path.join(temp_dir, f"compressed_{uid}.mp4")
     
-    success = await download_video(url, raw_path)
+    direct_url = await get_direct_video_url(url)
+    success = await download_video(direct_url, raw_path)
     if not success:
         if os.path.exists(raw_path):
             os.remove(raw_path)
