@@ -74,8 +74,8 @@ async def get_video_duration(filepath: str) -> float:
         logger.error(f"Exception getting video duration: {e}")
         return 0.0
 
-async def compress_video(input_path: str, output_path: str, target_size_mb: float = 24.0, callback=None) -> bool:
-    """Compress video to fit within a target size (default 24.0MB for Discord's 25MB limit)."""
+async def compress_video(input_path: str, output_path: str, target_size_mb: float = 50.0, callback=None) -> bool:
+    """Compress video to fit within a target size (default 50.0MB)."""
     duration = await get_video_duration(input_path)
     if duration <= 0:
         logger.error("Invalid duration, cannot calculate bitrate.")
@@ -144,7 +144,7 @@ async def compress_video(input_path: str, output_path: str, target_size_mb: floa
         logger.error(f"Exception running ffmpeg: {e}")
         return False
 
-async def process_and_compress(url: str, target_size_mb: float = 24.0, callback=None) -> str:
+async def process_and_compress(url: str, target_size_mb: float = 50.0, callback=None) -> str:
     """
     Downloads and compresses the video.
     Returns the path to the compressed video if successful, else None.
