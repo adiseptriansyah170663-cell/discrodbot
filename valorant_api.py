@@ -1,102 +1,110 @@
-import aiohttp
-import os
-import logging
 import urllib.parse
+import logging
+import asyncio
+import cloudscraper
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://api.henrikdev.xyz/valorant"
-
-async def _fetch(endpoint: str) -> dict:
-    api_key = os.getenv("HENRIK_API_KEY")
-    if not api_key:
-        return {"status": 401, "error": "API key not configured in .env (HENRIK_API_KEY)"}
+# Cloudscraper is synchronous, so we run it in a thread
+def fetch_tracker_url_sync(url: str):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    resp = scraper.get(url)
     
-    headers = {
-        "Authorization": api_key,
-        "User-Agent": "DiscordBot/1.0"
-    }
+    # 451 means profile is private on Tracker.gg
+    if resp.status_code == 451:
+        return {"status": 451, "error": "This Valorant profile is Private. You must make it public on tracker.gg to view stats."}
     
-    url = f"{API_BASE}{endpoint}"
+    if resp.status_code != 200:
+        return {"status": resp.status_code, "error": f"Failed to fetch data from tracker.gg (HTTP {resp.status_code})"}
+        
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url) as response:
-                data = await response.json()
-                if response.status != 200:
-                    error_msg = data.get("message") or data.get("errors", "Unknown API error")
-                    return {"status": response.status, "error": error_msg}
-                return {"status": 200, "data": data.get("data")}
+        return {"status": 200, "data": resp.json().get("data")}
     except Exception as e:
-        logger.error(f"Valorant API request failed: {e}")
-        return {"status": 500, "error": str(e)}
+        return {"status": 500, "error": f"Failed to parse tracker.gg response: {e}"}
 
-async def get_account(name: str, tag: str) -> dict:
-    """Fetch basic account info to get the region."""
-    # Endpoint: /v1/account/{name}/{tag}
-    return await _fetch(f"/v1/account/{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}")
-
-async def get_mmr(region: str, name: str, tag: str) -> dict:
-    """Fetch current rank and MMR changes."""
-    # Endpoint: /v1/mmr/{region}/{name}/{tag}
-    return await _fetch(f"/v1/mmr/{region}/{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}")
-
-async def get_latest_match(region: str, name: str, tag: str) -> dict:
-    """Fetch the single latest match."""
-    # Endpoint: /v3/matches/{region}/{name}/{tag}?size=1
-    return await _fetch(f"/v3/matches/{region}/{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}?size=1")
+async def fetch_tracker_url(url: str) -> dict:
+    return await asyncio.to_thread(fetch_tracker_url_sync, url)
 
 async def get_valorant_stats(name: str, tag: str) -> dict:
-    """Combines all endpoints to get a comprehensive recent match overview."""
+    """Combines Profile and Matches endpoints to get a comprehensive recent match overview."""
     
-    # 1. Get Account (for Region)
-    acc_res = await get_account(name, tag)
-    if acc_res["status"] != 200:
-        return acc_res
-        
-    region = acc_res["data"].get("region")
-    if not region:
-        return {"status": 404, "error": "Could not determine account region."}
-        
-    # 2. Get MMR (for Rank and RR changes)
-    mmr_res = await get_mmr(region, name, tag)
+    player_id = f"{urllib.parse.quote(name)}%23{urllib.parse.quote(tag)}"
     
-    # 3. Get Matches (for recent game stats)
-    match_res = await get_latest_match(region, name, tag)
+    # 1. Fetch Profile (for Tracker Score and Season Stats)
+    profile_url = f"https://api.tracker.gg/api/v2/valorant/standard/profile/riot/{player_id}"
+    profile_res = await fetch_tracker_url(profile_url)
+    
+    if profile_res["status"] != 200:
+        return profile_res
+        
+    profile_data = profile_res["data"]
+    
+    # Extract Tracker Score
+    tracker_score = 0
+    try:
+        overview_stats = profile_data["segments"][0]["stats"]
+        if "trnPerformanceScore" in overview_stats:
+            tracker_score = overview_stats["trnPerformanceScore"]["value"]
+    except Exception:
+        pass
+        
+    # 2. Fetch Latest Match
+    matches_url = f"https://api.tracker.gg/api/v2/valorant/standard/matches/riot/{player_id}?type=competitive"
+    match_res = await fetch_tracker_url(matches_url)
     
     if match_res["status"] != 200:
         return match_res
         
-    matches = match_res.get("data", [])
+    matches = match_res.get("data", {}).get("matches", [])
     if not matches:
-        return {"status": 404, "error": "No recent matches found for this player."}
+        return {"status": 404, "error": "No recent competitive matches found."}
         
     match = matches[0]
     
-    # Find player in match
-    player_data = None
-    all_players = match.get("players", {}).get("all_players", [])
-    for p in all_players:
-        if p.get("name", "").lower() == name.lower() and p.get("tag", "").lower() == tag.lower():
-            player_data = p
-            break
-            
-    if not player_data:
-        return {"status": 404, "error": "Player data not found in match."}
+    try:
+        meta = match.get("metadata", {})
+        seg = match["segments"][0]
+        stats = seg.get("stats", {})
         
-    # Find if their team won
-    team_color = player_data.get("team", "").lower() # "red" or "blue"
-    team_data = match.get("teams", {}).get(team_color, {})
-    has_won = team_data.get("has_won", False)
+        map_name = meta.get("mapName", "Unknown Map")
+        mode = meta.get("modeName", "Competitive")
+        result = meta.get("result", "Unknown") # 'victory', 'defeat', 'draw'
+        has_won = (result == 'victory')
+        
+        agent = seg.get("metadata", {}).get("agentName", "Unknown Agent")
+        agent_image = seg.get("metadata", {}).get("agentImageUrl", "")
+        
+        kills = stats.get("kills", {}).get("value", 0)
+        deaths = stats.get("deaths", {}).get("value", 0)
+        assists = stats.get("assists", {}).get("value", 0)
+        score = stats.get("score", {}).get("value", 0)
+        
+        # Win/Loss rounds
+        rounds_won = stats.get("roundsWon", {}).get("value", 0)
+        rounds_lost = stats.get("roundsLost", {}).get("value", 0)
+        
+        # Rank info (from the match data)
+        rank_name = stats.get("rank", {}).get("metadata", {}).get("tierName", "Unranked")
+        
+    except Exception as e:
+        logger.error(f"Error parsing match data: {e}")
+        return {"status": 500, "error": "Failed to parse match data structure."}
     
     return {
         "status": 200,
-        "account": acc_res["data"],
-        "mmr": mmr_res.get("data", {}) if mmr_res["status"] == 200 else {},
+        "tracker_score": tracker_score,
         "match": match,
-        "player_stats": player_data.get("stats", {}),
-        "agent": player_data.get("character"),
+        "agent": agent,
+        "agent_image": agent_image,
         "has_won": has_won,
-        "team_color": team_color,
-        "rounds_won": team_data.get("rounds_won", 0),
-        "rounds_lost": team_data.get("rounds_lost", 0)
+        "result": result.upper(),
+        "kills": int(kills),
+        "deaths": int(deaths),
+        "assists": int(assists),
+        "score": int(score),
+        "rounds_won": int(rounds_won),
+        "rounds_lost": int(rounds_lost),
+        "map_name": map_name,
+        "mode": mode,
+        "rank_name": rank_name
     }

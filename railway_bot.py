@@ -622,39 +622,27 @@ async def recent(ctx, *, riot_id: str = None):
       await msg.edit(content=f"Error fetching data: {stats.get('error', 'Unknown error')}")
       return
       
-    match = stats["match"]
-    player = stats["player_stats"]
-    mmr = stats["mmr"]
-    
-    # Format match data
-    map_name = match.get("metadata", {}).get("map", "Unknown Map")
-    mode = match.get("metadata", {}).get("mode", "Unknown Mode")
     agent = stats["agent"]
+    kills = stats["kills"]
+    deaths = stats["deaths"]
+    assists = stats["assists"]
+    score = stats["score"]
     
-    kills = player.get("kills", 0)
-    deaths = player.get("deaths", 0)
-    assists = player.get("assists", 0)
-    score = player.get("score", 0)
-    headshots = player.get("headshots", 0)
-    
-    # Format MMR data
-    current_rank = mmr.get("currenttierpatched", "Unranked")
-    rr_change = mmr.get("mmr_change_to_last_game", 0)
-    rr_sign = "+" if rr_change > 0 else ""
+    current_rank = stats["rank_name"]
+    tracker_score = stats["tracker_score"]
     
     # Win/Loss formatting
-    win_status = "WON" if stats["has_won"] else "LOST"
+    win_status = stats["result"]
     rounds_won = stats["rounds_won"]
     rounds_lost = stats["rounds_lost"]
     
     color = discord.Color.green() if stats["has_won"] else discord.Color.red()
-    if rounds_won == rounds_lost:
-      win_status = "DRAW"
+    if win_status == "DRAW":
       color = discord.Color.light_gray()
       
     embed = discord.Embed(
       title=f"Recent Match: {name}#{tag}",
-      description=f"**{win_status}** ({rounds_won} - {rounds_lost}) on **{map_name}** ({mode})",
+      description=f"**{win_status}** ({rounds_won} - {rounds_lost}) on **{stats['map_name']}** ({stats['mode']})",
       color=color
     )
     
@@ -665,12 +653,17 @@ async def recent(ctx, *, riot_id: str = None):
     embed.add_field(name="K/D Ratio", value=f"{kd:.2f}", inline=True)
     
     embed.add_field(name="Combat Score", value=str(score), inline=True)
-    embed.add_field(name="Headshots", value=str(headshots), inline=True)
     
-    if current_rank != "Unranked":
-      embed.add_field(name="Rank Update", value=f"{current_rank} ({rr_sign}{rr_change} RR)", inline=False)
+    if tracker_score:
+      embed.add_field(name="Tracker Score", value=str(tracker_score), inline=True)
       
-    embed.set_footer(text="Data provided by HenrikDev API")
+    if current_rank != "Unranked":
+      embed.add_field(name="Rank", value=current_rank, inline=True)
+      
+    if stats["agent_image"]:
+      embed.set_thumbnail(url=stats["agent_image"])
+      
+    embed.set_footer(text="Data provided by Tracker.gg")
     
     await msg.edit(content="", embed=embed)
     
