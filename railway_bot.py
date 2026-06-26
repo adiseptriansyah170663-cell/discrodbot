@@ -690,7 +690,9 @@ async def recent(ctx, *, riot_id: str = None):
     
     # Tracker Score formatting (Match vs Season Avg)
     if m_tracker_score and s_tracker_score:
-      embed.add_field(name="Tracker Score", value=f"**{m_tracker_score}** Match | **{s_tracker_score}** Season Avg", inline=False)
+      trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
+      embed.add_field(name="Season Tracker Score", value=f"**{s_tracker_score}** ({fmt_delta(trn_delta)})", inline=False)
+      embed.add_field(name="Match Tracker Score", value=f"{m_tracker_score}", inline=False)
       
     if current_rank != "Unranked":
       embed.add_field(name="Rank", value=current_rank, inline=True)
