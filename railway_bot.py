@@ -841,10 +841,17 @@ async def vtl(ctx, *, riot_id: str = None):
     avatar    = stats.get("avatar_url", "")
     est_score = stats.get("tracker_score") or valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
 
+    if stats.get("is_season"):
+      scope = f"Current act — **{sample}** competitive match(es)"
+      if stats.get("truncated"):
+        scope += " (capped)"
+    else:
+      scope = f"Last **{sample}** competitive match(es)"
+
     embed = discord.Embed(
       title=f"Valorant Profile: {name}#{tag}",
       url=vtl_url,
-      description=f"Aggregated from last **{sample}** competitive match(es)",
+      description=scope,
       color=discord.Color.dark_teal()
     )
 

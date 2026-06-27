@@ -269,20 +269,29 @@ async def get_season_profile(name: str, tag: str) -> dict:
 # datacenter IP like Railway's.  HenrikDev is the Riot-backed source those
 # lookup sites use under the hood: clean JSON, no Cloudflare, and it returns
 # data even when the player's tracker.gg profile is private (it reads Riot,
-# not tracker.gg).  We aggregate recent competitive matches and feed the
-# result into calculate_tracker_score() for the estimated TRN score.
+# not tracker.gg).  We aggregate the player's full current-season competitive
+# matches and feed the result into calculate_tracker_score() for the estimated
+# TRN score.
 
 def calculate_tracker_score(kdr: float, hs_pct: float, winrate: float, dpr: float = 0) -> int:
     """
-    Approximated TRN Performance Score.
-    Not the official tracker.gg algorithm — used when that score isn't available.
-    Outputs in the same 0-2000 range as the official score.
+    Approximated TRN Performance Score on the official 0-1000 scale.
+
+    The real tracker.gg algorithm is proprietary; this is a weighted heuristic
+    of the four signals we can derive (KDR, HS%, Winrate, Damage/Round).  It is
+    calibrated against a real reference point:
+        KDR 1.24, HS 23.8%, WR 85.7%, DPR 168.3  ->  ~914   (real score: 910)
+    Send more (stats -> real score) pairs to refine the weights/anchors.
     """
-    kdr_comp  = (max(0.0, kdr)     ** 0.8) * 400
-    hs_comp   = (max(0.0, hs_pct)  ** 0.7) * 15
-    wr_comp   = max(0.0, winrate) * 3.5
-    dpr_comp  = (max(0.0, dpr) ** 0.65) * 7 if dpr > 0 else 100
-    return round(min(2000, max(0, kdr_comp + hs_comp + wr_comp + dpr_comp)))
+    # Each signal normalised to 0-1 against a "near-elite" reference value.
+    f_kdr = min(max(kdr, 0.0) / 1.5, 1.0)
+    f_hs  = min(max(hs_pct, 0.0) / 32.0, 1.0)
+    f_wr  = min(max(winrate, 0.0) / 72.0, 1.0)
+    # Missing damage -> neutral-average contribution instead of tanking the score.
+    f_dpr = min(max(dpr, 0.0) / 170.0, 1.0) if dpr and dpr > 0 else 0.65
+
+    perf = 0.30 * f_kdr + 0.12 * f_hs + 0.25 * f_wr + 0.33 * f_dpr
+    return round(min(1000, max(0, 1000 * perf)))
 
 
 VALID_REGIONS = {"na", "eu", "ap", "kr", "latam", "br"}
@@ -353,13 +362,136 @@ def _player_damage(stats: dict) -> float:
     return _num(stats.get("damage_made"))
 
 
-def fetch_vtl_profile_sync(name: str, tag: str, size: int = 10) -> dict:
+def _season_of(match: dict) -> str:
+    """Act identifier for a match (stored-matches: meta.season; v4: metadata.season)."""
+    meta = match.get("meta") or match.get("metadata") or {}
+    season = meta.get("season") or {}
+    if isinstance(season, dict):
+        return str(season.get("short") or season.get("id") or "")
+    return str(season or "")
+
+
+def _extract_match(match: dict, puuid: str, name: str, tag: str) -> dict | None:
     """
-    Build a season-style overview from HenrikDev by aggregating the player's
-    recent competitive matches, plus current rank from the MMR endpoint.
+    Normalise one match into the queried player's stats, handling BOTH shapes:
+      • stored-matches v1 — `stats` is already the queried player; shots.{head,
+        body,leg}; damage.made; team "Red"/"Blue"; teams {red,blue} round scores.
+      • v4 matches — find the player in `players`; stats.headshots/...; damage.dealt;
+        team_id; teams[] with won + rounds{won,lost}.
+    Returns None if the player can't be found or the match has no usable data.
+    """
+    if not isinstance(match, dict):
+        return None
+
+    teams = match.get("teams")
+    won = None
+    rounds = 0
+    tier_name = ""
+    agent = ""
+
+    players = match.get("players")
+    if players is not None:
+        # ---- v4 shape ----
+        if isinstance(players, dict):
+            players = players.get("all_players") or players.get("players") or []
+        if not isinstance(players, list):
+            return None
+        me = None
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            if puuid and p.get("puuid") == puuid:
+                me = p
+                break
+            if (p.get("name") or "").lower() == name.lower() and \
+               (p.get("tag") or "").lower() == tag.lower():
+                me = p
+        if me is None:
+            return None
+        st = me.get("stats") or {}
+        hs = int(_num(st.get("headshots")))
+        bs = int(_num(st.get("bodyshots")))
+        ls = int(_num(st.get("legshots")))
+        damage = _player_damage(st)
+        team = me.get("team_id") or me.get("team") or ""
+        if isinstance(teams, list):
+            for t in teams:
+                if isinstance(t, dict) and \
+                   str(t.get("team_id") or t.get("team")).lower() == str(team).lower():
+                    won = t.get("won")
+                    r = t.get("rounds")
+                    if isinstance(r, dict):
+                        rw, rl = int(_num(r.get("won"))), int(_num(r.get("lost")))
+                        rounds = rw + rl
+                        if won is None:
+                            won = rw > rl
+                    break
+        tier = me.get("tier")
+        if isinstance(tier, dict):
+            tier_name = tier.get("name") or ""
+        ag = me.get("agent")
+        if isinstance(ag, dict):
+            agent = ag.get("name") or ""
+
+    elif isinstance(match.get("stats"), dict):
+        # ---- stored-matches shape (stats already = queried player) ----
+        st = match.get("stats") or {}
+        shots = st.get("shots") or {}
+        hs = int(_num(shots.get("head")))
+        bs = int(_num(shots.get("body")))
+        ls = int(_num(shots.get("leg")))
+        dmg = st.get("damage")
+        damage = _num(dmg.get("made", dmg.get("dealt"))) if isinstance(dmg, dict) else _num(dmg)
+        team = st.get("team") or ""
+        if isinstance(teams, dict):
+            my_r = _num(teams.get(str(team).lower()))
+            other = "blue" if str(team).lower() == "red" else "red"
+            opp_r = _num(teams.get(other))
+            rounds = int(my_r + opp_r)
+            if my_r != opp_r:
+                won = my_r > opp_r
+        ch = st.get("character")
+        if isinstance(ch, dict):
+            agent = ch.get("name") or ""
+        # stored-matches `tier` is a numeric id → rank name comes from MMR instead
+    else:
+        return None
+
+    k = int(_num(st.get("kills")))
+    d = int(_num(st.get("deaths")))
+    a = int(_num(st.get("assists")))
+    score = int(_num(st.get("score")))
+
+    # Skip empty / abandoned matches with no stat data at all
+    if (k + d + a + hs + bs + ls) == 0:
+        return None
+
+    return {
+        "k": k, "d": d, "a": a, "score": score,
+        "hs": hs, "bs": bs, "ls": ls,
+        "damage": damage, "rounds": rounds, "won": won,
+        "tier_name": tier_name, "agent": agent,
+        "season": _season_of(match),
+    }
+
+
+# Pagination bounds for full-season aggregation
+STORED_PAGE_SIZE   = 20
+STORED_MAX_PAGES   = 12
+STORED_MAX_MATCHES = 200
+
+
+def fetch_vtl_profile_sync(name: str, tag: str, max_matches: int = STORED_MAX_MATCHES) -> dict:
+    """
+    Build a SEASON overview from HenrikDev by aggregating every competitive
+    match the player has played in the current act, plus current rank (MMR).
+
+    Walks the stored-matches endpoint page by page, keeping only matches whose
+    act matches the most-recent match's act, until the act boundary is crossed
+    (or a safety cap is hit).  Falls back to v4 recent matches if stored-matches
+    is unavailable.
 
     Returns {"status": 200, "stats": {...}} or {"status": <code>, "error": ...}.
-    The stats dict matches what the !vtl command consumes.
     """
     enc_name = urllib.parse.quote(name)
     enc_tag  = urllib.parse.quote(tag)
@@ -383,135 +515,109 @@ def fetch_vtl_profile_sync(name: str, tag: str, size: int = 10) -> dict:
     elif isinstance(card, str) and card:
         avatar_url = f"https://media.valorant-api.com/playercards/{card}/smallart.png"
 
-    # 2. Recent competitive matches (v4) → aggregate the target player's stats
-    matches_res = _henrik_get(
-        f"/valorant/v4/matches/{region}/pc/{enc_name}/{enc_tag}"
-        f"?mode=competitive&size={size}"
-    )
-    if not matches_res["ok"]:
-        return {"status": matches_res["status"], "error": matches_res["error"]}
+    # 2. Collect current-act competitive matches (paginate stored-matches)
+    collected: list = []
+    target_season = None
+    truncated = False
+    used_fallback = False
+    first_err = None
 
-    matches = matches_res["data"] or []
-    # v4 returns data as a bare list; be defensive about a {"matches": [...]} wrapper
-    if isinstance(matches, dict):
-        matches = matches.get("matches") or matches.get("data") or []
-    if not isinstance(matches, list) or not matches:
-        return {"status": 404, "error": "No recent competitive matches found."}
+    page = 1
+    while page <= STORED_MAX_PAGES and len(collected) < max_matches:
+        res = _henrik_get(
+            f"/valorant/v1/stored-matches/{region}/{enc_name}/{enc_tag}"
+            f"?mode=competitive&size={STORED_PAGE_SIZE}&page={page}"
+        )
+        if not res["ok"]:
+            if page == 1:
+                first_err = res
+                # Auth / rate-limit errors won't be fixed by the v4 fallback
+                if res["status"] in (401, 403, 429):
+                    return {"status": res["status"], "error": res["error"]}
+                used_fallback = True
+            break
 
-    tot_k = tot_d = tot_a = 0
-    tot_hs = tot_body = tot_leg = 0
-    tot_dmg = 0.0
-    tot_rounds = 0
-    tot_score = 0
-    wins = losses = draws = 0
-    counted = 0
-    latest_rank = "Unranked"
-    latest_agent = ""
+        data = res["data"] or []
+        if isinstance(data, dict):
+            data = data.get("matches") or data.get("data") or []
+        if not isinstance(data, list) or not data:
+            break
 
-    for match in matches:
-        if not isinstance(match, dict):
-            continue
-        players = match.get("players")
-        # v4: players is a list. (Defensive: some shapes wrap in {"all_players": [...]})
-        if isinstance(players, dict):
-            players = players.get("all_players") or players.get("players") or []
-        if not isinstance(players, list):
-            continue
-
-        # Find the queried player by puuid (fallback to name/tag match)
-        me = None
-        for p in players:
-            if not isinstance(p, dict):
+        crossed_boundary = False
+        for m in data:
+            ex = _extract_match(m, puuid, name, tag)
+            if ex is None:
                 continue
-            if puuid and p.get("puuid") == puuid:
-                me = p
+            s = ex["season"]
+            if target_season is None and s:
+                target_season = s
+            if target_season and s and s != target_season:
+                crossed_boundary = True   # reached previous act → stop after this page
+                continue
+            collected.append(ex)
+            if len(collected) >= max_matches:
+                truncated = True
                 break
-            pn = (p.get("name") or "").lower()
-            pt = (p.get("tag") or "").lower()
-            if pn == name.lower() and pt == tag.lower():
-                me = p
-        if me is None:
-            continue
 
-        st = me.get("stats") or {}
-        k = int(_num(st.get("kills")))
-        d = int(_num(st.get("deaths")))
-        a = int(_num(st.get("assists")))
-        hs = int(_num(st.get("headshots")))
-        bs = int(_num(st.get("bodyshots")))
-        ls = int(_num(st.get("legshots")))
-        score = int(_num(st.get("score")))
+        if crossed_boundary or truncated or len(data) < STORED_PAGE_SIZE:
+            break
+        page += 1
+    else:
+        # loop exhausted pages without hitting the act boundary
+        if page > STORED_MAX_PAGES:
+            truncated = True
 
-        # Skip empty/abandoned matches that have no shot data at all
-        if (k + d + a + hs + bs + ls) == 0:
-            continue
+    # 3. Fallback: v4 recent matches if stored-matches gave nothing
+    if used_fallback or not collected:
+        v4 = _henrik_get(
+            f"/valorant/v4/matches/{region}/pc/{enc_name}/{enc_tag}?mode=competitive&size=10"
+        )
+        if v4["ok"]:
+            data = v4["data"] or []
+            if isinstance(data, dict):
+                data = data.get("matches") or data.get("data") or []
+            collected = []
+            for m in (data or []):
+                ex = _extract_match(m, puuid, name, tag)
+                if ex:
+                    collected.append(ex)
+            used_fallback = True
+            target_season = None  # fallback isn't act-filtered
 
-        tot_k += k; tot_d += d; tot_a += a
-        tot_hs += hs; tot_body += bs; tot_leg += ls
-        tot_score += score
-        tot_dmg += _player_damage(st)
+    if not collected:
+        if first_err:
+            return {"status": first_err["status"], "error": first_err["error"]}
+        return {"status": 404, "error": "No competitive matches found for this player."}
 
-        # Team + win/loss
-        team_id = me.get("team_id") or me.get("team") or ""
-        teams = match.get("teams")
-        my_team = None
-        if isinstance(teams, list):
-            for t in teams:
-                t_id = t.get("team_id") or t.get("team") if isinstance(t, dict) else None
-                if t_id is not None and str(t_id).lower() == str(team_id).lower():
-                    my_team = t
-                    break
-        elif isinstance(teams, dict):
-            # older shape: {"red": {...}, "blue": {...}} or {"red": <rounds>}
-            my_team = teams.get(str(team_id).lower())
+    # 4. Aggregate
+    tot_k   = sum(m["k"] for m in collected)
+    tot_d   = sum(m["d"] for m in collected)
+    tot_a   = sum(m["a"] for m in collected)
+    tot_hs  = sum(m["hs"] for m in collected)
+    tot_body = sum(m["bs"] for m in collected)
+    tot_leg = sum(m["ls"] for m in collected)
+    tot_score = sum(m["score"] for m in collected)
+    tot_dmg = sum(m["damage"] for m in collected)
+    tot_rounds = sum(m["rounds"] for m in collected)
+    wins   = sum(1 for m in collected if m["won"] is True)
+    losses = sum(1 for m in collected if m["won"] is False)
+    draws  = sum(1 for m in collected if m["won"] is None)
+    counted = len(collected)
 
-        match_rounds = 0
-        if isinstance(my_team, dict):
-            won_flag = my_team.get("won")
-            rounds = my_team.get("rounds")
-            if isinstance(rounds, dict):
-                rw = int(_num(rounds.get("won")))
-                rl = int(_num(rounds.get("lost")))
-                match_rounds = rw + rl
-                if won_flag is None:
-                    won_flag = rw > rl
-            if won_flag is True:
-                wins += 1
-            elif won_flag is False:
-                losses += 1
-            else:
-                draws += 1
+    kdr     = tot_k / max(tot_d, 1)
+    shots   = tot_hs + tot_body + tot_leg
+    hs_pct  = (tot_hs / shots * 100) if shots else 0.0
+    decided = wins + losses
+    winrate = (wins / decided * 100) if decided else 0.0
+    dpr     = (tot_dmg / tot_rounds) if tot_rounds else 0.0
+    acs     = (tot_score / tot_rounds) if tot_rounds else 0.0
 
-        # Fallback rounds count from metadata if team rounds were unavailable
-        if match_rounds == 0:
-            meta = match.get("metadata") or {}
-            match_rounds = int(_num(meta.get("rounds_played") or meta.get("total_rounds")))
-        tot_rounds += match_rounds
+    # Most-recent match (first collected) supplies fallback rank + last agent
+    latest_agent = collected[0].get("agent", "")
+    latest_tier  = collected[0].get("tier_name", "")
 
-        # Most-recent match (first in list) supplies current rank + agent
-        if counted == 0:
-            tier = me.get("tier")
-            if isinstance(tier, dict):
-                latest_rank = tier.get("name") or latest_rank
-            agent = me.get("agent")
-            if isinstance(agent, dict):
-                latest_agent = agent.get("name") or ""
-        counted += 1
-
-    if counted == 0:
-        return {"status": 404, "error": "Could not find the player's stats in recent matches."}
-
-    # Aggregate metrics
-    kdr      = tot_k / max(tot_d, 1)
-    shots    = tot_hs + tot_body + tot_leg
-    hs_pct   = (tot_hs / shots * 100) if shots else 0.0
-    decided  = wins + losses
-    winrate  = (wins / decided * 100) if decided else 0.0
-    dpr      = (tot_dmg / tot_rounds) if tot_rounds else 0.0
-    acs      = (tot_score / tot_rounds) if tot_rounds else 0.0
-
-    # 3. Current rank from MMR (authoritative); fall back to latest match tier
-    rank_name = latest_rank or "Unranked"
+    # 5. Current rank from MMR (authoritative); fall back to latest match tier
+    rank_name = latest_tier or "Unranked"
     mmr_res = _henrik_get(f"/valorant/v3/mmr/{region}/pc/{enc_name}/{enc_tag}")
     if mmr_res["ok"]:
         cur = (mmr_res["data"] or {}).get("current") or {}
@@ -541,10 +647,13 @@ def fetch_vtl_profile_sync(name: str, tag: str, size: int = 10) -> dict:
             "agent":      latest_agent,
             "tracker_score": est_score,
             "sample_size": counted,
+            "season":     target_season or "",
+            "is_season":  bool(target_season) and not used_fallback,
+            "truncated":  truncated,
         },
     }
 
 
-async def get_vtl_profile(name: str, tag: str, size: int = 10) -> dict:
-    """Async wrapper — aggregates HenrikDev competitive matches in a thread."""
-    return await asyncio.to_thread(fetch_vtl_profile_sync, name, tag, size)
+async def get_vtl_profile(name: str, tag: str, max_matches: int = STORED_MAX_MATCHES) -> dict:
+    """Async wrapper — aggregates the player's current-act matches in a thread."""
+    return await asyncio.to_thread(fetch_vtl_profile_sync, name, tag, max_matches)
