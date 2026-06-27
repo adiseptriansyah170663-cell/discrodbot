@@ -741,7 +741,7 @@ async def tracker(ctx, *, riot_id: str = None):
     if profile["status"] == 451:
       await msg.edit(
         content=f"This profile is private on Tracker.gg.\n"
-                f"Try `!vtl {name}#{tag}` to view their stats on ValoTool Lookup instead."
+                f"Try `!vtl {name}#{tag}` — it reads stats directly from Riot (works for private profiles)."
       )
       return
 
@@ -794,7 +794,7 @@ async def tracker(ctx, *, riot_id: str = None):
 
 @bot.command(name='vtl')
 async def vtl(ctx, *, riot_id: str = None):
-  """Season stats from vtl.lol (works for private Tracker.gg profiles)"""
+  """Recent-form stats + estimated Tracker Score (works for private Tracker.gg profiles)"""
   if not riot_id or '#' not in riot_id:
     await ctx.send("Usage: `!vtl <name>#<tag>`\nExample: `!vtl TenZ#0303`")
     return
@@ -804,50 +804,47 @@ async def vtl(ctx, *, riot_id: str = None):
   tag = tag.strip()
 
   vtl_url = f"https://vtl.lol/id/{urllib.parse.quote(name)}_{urllib.parse.quote(tag)}"
-  msg = await ctx.send(f"Fetching vtl.lol profile for **{name}#{tag}**...")
+  msg = await ctx.send(f"Fetching stats for **{name}#{tag}**...")
 
   try:
     result = await valorant_api.get_vtl_profile(name, tag)
     stats = result.get("stats")
 
-    # ── Fallback: link-only embed ─────────────────────────────────────────
-    if result["status"] != 200 or stats is None:
-      if result["status"] == 403:
-        note = "\n*(Cloudflare blocked the data fetch — view manually via the link)*"
-      else:
-        note = "\n*(Stats page loaded but data could not be auto-parsed — view manually)*"
-
+    # ── Failure: link-only fallback embed ─────────────────────────────────
+    if result.get("status") != 200 or stats is None:
+      err = result.get("error", "Unknown error")
       embed = discord.Embed(
-        title=f"ValoTool Lookup: {name}#{tag}",
+        title=f"Valorant Profile: {name}#{tag}",
         description=(
-          f"[View profile on vtl.lol]({vtl_url})\n\n"
-          f"ValoTool Lookup shows stats even for private Tracker.gg profiles.{note}"
+          f"Could not load stats: {err}\n\n"
+          f"[View profile on vtl.lol]({vtl_url})"
         ),
-        color=discord.Color.blue()
+        color=discord.Color.orange()
       )
-      embed.set_footer(text="vtl.lol")
+      embed.set_footer(text="HenrikDev (Riot)")
       await msg.edit(content="", embed=embed)
       return
 
     # ── Rich stats embed ──────────────────────────────────────────────────
-    kdr      = stats.get("kdr", 0.0)
-    hs_pct   = stats.get("hs_pct", 0.0)
-    winrate  = stats.get("winrate", 0.0)
-    dpr      = stats.get("dpr", 0.0)
-    kills    = stats.get("kills", 0)
-    deaths   = stats.get("deaths", 0)
-    assists  = stats.get("assists", 0)
-    matches  = stats.get("matches", 0)
-    wins     = stats.get("wins", 0)
-    losses   = stats.get("losses", 0)
-    rank     = stats.get("rank_name", "Unknown")
-    avatar   = stats.get("avatar_url", "")
-
-    est_score = valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
+    kdr       = stats.get("kdr", 0.0)
+    hs_pct    = stats.get("hs_pct", 0.0)
+    winrate   = stats.get("winrate", 0.0)
+    dpr       = stats.get("dpr", 0.0)
+    acs       = stats.get("acs", 0.0)
+    kills     = stats.get("kills", 0)
+    deaths    = stats.get("deaths", 0)
+    assists   = stats.get("assists", 0)
+    sample    = stats.get("sample_size", stats.get("matches", 0))
+    wins      = stats.get("wins", 0)
+    losses    = stats.get("losses", 0)
+    rank      = stats.get("rank_name", "Unranked")
+    avatar    = stats.get("avatar_url", "")
+    est_score = stats.get("tracker_score") or valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
 
     embed = discord.Embed(
-      title=f"ValoTool Lookup: {name}#{tag}",
+      title=f"Valorant Profile: {name}#{tag}",
       url=vtl_url,
+      description=f"Aggregated from last **{sample}** competitive match(es)",
       color=discord.Color.dark_teal()
     )
 
@@ -859,33 +856,33 @@ async def vtl(ctx, *, riot_id: str = None):
     embed.add_field(name="HS%", value=f"{hs_pct:.1f}%", inline=True)
     embed.add_field(name="Winrate", value=f"{winrate:.1f}%", inline=True)
 
-    embed.add_field(name="Matches", value=str(matches), inline=True)
-    if wins > 0 or losses > 0:
-      embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
-    else:
-      embed.add_field(name="​", value="​", inline=True)
+    embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
     if dpr > 0:
       embed.add_field(name="DMG/Round", value=f"{dpr:.1f}", inline=True)
     else:
       embed.add_field(name="​", value="​", inline=True)
+    if acs > 0:
+      embed.add_field(name="ACS", value=f"{acs:.0f}", inline=True)
+    else:
+      embed.add_field(name="​", value="​", inline=True)
 
     if kills > 0 or deaths > 0 or assists > 0:
-      embed.add_field(name="K / D / A", value=f"{kills} / {deaths} / {assists}", inline=True)
+      embed.add_field(name="K / D / A (total)", value=f"{kills} / {deaths} / {assists}", inline=True)
 
     if avatar:
       embed.set_thumbnail(url=avatar)
 
-    embed.set_footer(text="Data from vtl.lol • Est. Tracker Score is approximated (not official)")
+    embed.set_footer(text="Data from HenrikDev (Riot) • Tracker Score is estimated, not official • Works for private Tracker.gg profiles")
     await msg.edit(content="", embed=embed)
 
   except Exception as e:
     logger.error(f"Error in vtl command: {e}")
     embed = discord.Embed(
-      title=f"ValoTool Lookup: {name}#{tag}",
-      description=f"[View profile on vtl.lol]({vtl_url})",
-      color=discord.Color.blue()
+      title=f"Valorant Profile: {name}#{tag}",
+      description=f"An error occurred while fetching stats.\n\n[View profile on vtl.lol]({vtl_url})",
+      color=discord.Color.orange()
     )
-    embed.set_footer(text="vtl.lol")
+    embed.set_footer(text="HenrikDev (Riot)")
     await msg.edit(content="", embed=embed)
 
 
@@ -1250,7 +1247,7 @@ async def commands_cmd(ctx):
     commands_list = [
       ('recent <name>#<tag> [count]', 'Recent match stats (1-3 matches)'),
       ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
-      ('vtl <name>#<tag>', 'Stats from vtl.lol (works for private profiles)'),
+      ('vtl <name>#<tag>', 'Recent-form stats + est. Tracker Score (private profiles too)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),

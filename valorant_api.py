@@ -1,11 +1,15 @@
-import json
-import re
+import os
 import urllib.parse
 import logging
 import asyncio
 from curl_cffi import requests
 
 logger = logging.getLogger(__name__)
+
+# HenrikDev API key (free, from https://api.henrikdev.xyz/dashboard/).
+# Set HENRIK_API_KEY in Railway environment variables.
+HENRIK_API_KEY = os.getenv("HENRIK_API_KEY", "")
+HENRIK_BASE = "https://api.henrikdev.xyz"
 
 # curl_cffi is synchronous, so we run it in a thread
 def fetch_tracker_url_sync(url: str):
@@ -257,7 +261,16 @@ async def get_season_profile(name: str, tag: str) -> dict:
         return {"status": 500, "error": "Failed to parse profile data structure."}
 
 
-# ─── VTL.LOL scraping with Cloudflare bypass ───────────────────────────────
+# ─── !vtl  — HenrikDev (Riot-direct) stats + computed Tracker Score ────────
+#
+# Why not vtl.lol directly?  vtl.lol sits behind Cloudflare's "Managed
+# Challenge" (cf-mitigated: challenge) which REQUIRES executing JavaScript to
+# solve — no TLS-impersonation / header trick can pass it, especially from a
+# datacenter IP like Railway's.  HenrikDev is the Riot-backed source those
+# lookup sites use under the hood: clean JSON, no Cloudflare, and it returns
+# data even when the player's tracker.gg profile is private (it reads Riot,
+# not tracker.gg).  We aggregate recent competitive matches and feed the
+# result into calculate_tracker_score() for the estimated TRN score.
 
 def calculate_tracker_score(kdr: float, hs_pct: float, winrate: float, dpr: float = 0) -> int:
     """
@@ -272,239 +285,266 @@ def calculate_tracker_score(kdr: float, hs_pct: float, winrate: float, dpr: floa
     return round(min(2000, max(0, kdr_comp + hs_comp + wr_comp + dpr_comp)))
 
 
-def _parse_vtl_sveltekit_nodes(raw: dict) -> dict | None:
+VALID_REGIONS = {"na", "eu", "ap", "kr", "latam", "br"}
+
+
+def _henrik_get(path: str) -> dict:
     """
-    SvelteKit __data.json embeds page-load data in a nested nodes list.
-    Walk it and return the richest dict we find.
+    GET a HenrikDev endpoint with the API key.  Returns:
+      {"ok": True, "data": <json data field>}            on success
+      {"ok": False, "status": <code>, "error": <msg>}    on failure
     """
+    if not HENRIK_API_KEY:
+        return {"ok": False, "status": 401,
+                "error": "HENRIK_API_KEY not set. Add it in Railway env vars "
+                         "(free key from https://api.henrikdev.xyz/dashboard/)."}
+
+    url = f"{HENRIK_BASE}{path}"
     try:
-        nodes = raw.get("nodes") or []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            data = node.get("data")
-            if isinstance(data, list):
-                # devalue arrays: index 0 is often the root object index
-                # real objects are the dicts inside
-                for item in data:
-                    if isinstance(item, dict) and len(item) >= 3:
-                        return item
-            elif isinstance(data, dict) and len(data) >= 3:
-                return data
+        resp = requests.get(
+            url,
+            headers={"Authorization": HENRIK_API_KEY, "Accept": "application/json"},
+            impersonate="chrome124",
+            timeout=20,
+        )
     except Exception as e:
-        logger.debug(f"vtl SvelteKit node parse error: {e}")
-    return None
+        return {"ok": False, "status": 500, "error": f"Request failed: {e}"}
+
+    if resp.status_code == 429:
+        return {"ok": False, "status": 429, "error": "Rate limited by HenrikDev. Try again shortly."}
+    if resp.status_code == 401 or resp.status_code == 403:
+        return {"ok": False, "status": resp.status_code,
+                "error": "HenrikDev rejected the API key (invalid or unauthorized)."}
+    if resp.status_code == 404:
+        return {"ok": False, "status": 404, "error": "Player or matches not found."}
+
+    try:
+        body = resp.json()
+    except Exception as e:
+        return {"ok": False, "status": 500, "error": f"Bad JSON from HenrikDev: {e}"}
+
+    if resp.status_code != 200:
+        # HenrikDev returns {"errors":[{"message":...}]} on failures
+        msg = "Unknown error"
+        if isinstance(body, dict) and body.get("errors"):
+            msg = body["errors"][0].get("message", msg)
+        return {"ok": False, "status": resp.status_code, "error": f"HenrikDev: {msg}"}
+
+    return {"ok": True, "data": body.get("data") if isinstance(body, dict) else body}
 
 
-def _normalise_vtl_stats(raw: dict) -> dict | None:
+def _num(v) -> float:
+    """Coerce a possibly-missing/nested value to float."""
+    if isinstance(v, dict):
+        v = v.get("value", v.get("dealt", 0))
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _player_damage(stats: dict) -> float:
+    """v4 nests damage as {dealt, received}; older shapes use a flat number/damage_made."""
+    dmg = stats.get("damage")
+    if isinstance(dmg, dict):
+        return _num(dmg.get("dealt"))
+    if dmg is not None:
+        return _num(dmg)
+    return _num(stats.get("damage_made"))
+
+
+def fetch_vtl_profile_sync(name: str, tag: str, size: int = 10) -> dict:
     """
-    Normalise a raw dict (from __data.json or an API endpoint) into a flat
-    stats dict the !vtl command can consume.  Handles many possible key names
-    because we don't know vtl.lol's exact schema.
+    Build a season-style overview from HenrikDev by aggregating the player's
+    recent competitive matches, plus current rank from the MMR endpoint.
+
+    Returns {"status": 200, "stats": {...}} or {"status": <code>, "error": ...}.
+    The stats dict matches what the !vtl command consumes.
     """
-    if not isinstance(raw, dict):
-        return None
-
-    # Drill into common wrappers
-    for wrapper in ("stats", "competitive", "season", "data", "player", "profile"):
-        if wrapper in raw and isinstance(raw[wrapper], dict):
-            inner = _normalise_vtl_stats(raw[wrapper])
-            if inner:
-                return inner
-
-    def _v(d, *keys, default=0.0):
-        for k in keys:
-            v = d.get(k)
-            if v is None:
-                continue
-            if isinstance(v, dict):
-                v = v.get("value") or v.get("val") or 0
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                pass
-        return default
-
-    kdr     = _v(raw, "kdr", "kd", "kDRatio", "kdRatio", "k_d")
-    kills   = _v(raw, "kills")
-    deaths  = _v(raw, "deaths")
-    assists = _v(raw, "assists")
-    hs_pct  = _v(raw, "hs_pct", "hsPct", "headshots_pct", "headshotPct", "hs", "headshots")
-    winrate = _v(raw, "winrate", "win_rate", "winRate", "wRate", "wins_pct")
-    matches = int(_v(raw, "matches", "matches_played", "matchesPlayed", "games"))
-    wins    = int(_v(raw, "wins", "matches_won", "matchesWon", "w"))
-    losses  = int(_v(raw, "losses", "matches_lost", "matchesLost", "l"))
-    dpr     = _v(raw, "dpr", "damage_per_round", "damagePerRound", "acs", "avgDamagePerRound")
-
-    # Derive KDR from K/D when not explicit
-    if kdr == 0 and (kills > 0 or deaths > 0):
-        kdr = kills / max(deaths, 1)
-
-    # Convert ratio → percentage where applicable
-    if 0 < hs_pct <= 1.0:
-        hs_pct *= 100
-    if 0 < winrate <= 1.0:
-        winrate *= 100
-
-    # Need at least one meaningful stat
-    if kdr == 0 and kills == 0 and matches == 0:
-        return None
-
-    rank_raw = raw.get("rank") or raw.get("currentRank") or {}
-    rank_name = (
-        rank_raw.get("name") or rank_raw.get("tier_name") or rank_raw.get("tierName")
-        if isinstance(rank_raw, dict) else str(rank_raw)
-    ) or raw.get("rank_name") or raw.get("rankName") or "Unknown"
-
-    avatar = (
-        raw.get("avatar") or raw.get("avatar_url") or raw.get("avatarUrl")
-        or raw.get("profileImage") or raw.get("card", {}).get("small", "")
-        if isinstance(raw.get("card"), dict) else ""
-    ) or ""
-
-    return {
-        "kdr":      kdr,
-        "kills":    int(kills),
-        "deaths":   int(deaths),
-        "assists":  int(assists),
-        "hs_pct":   hs_pct,
-        "winrate":  winrate,
-        "matches":  matches,
-        "wins":     wins,
-        "losses":   losses,
-        "dpr":      dpr,
-        "rank_name": str(rank_name),
-        "avatar_url": str(avatar),
-    }
-
-
-def fetch_vtl_profile_sync(name: str, tag: str) -> dict:
-    """
-    Fetch vtl.lol profile stats, bypassing Cloudflare with curl_cffi.
-
-    Strategy (tried in order for each impersonation profile):
-      1. Warm-up GET on vtl.lol homepage to acquire CF cookies.
-      2. SvelteKit __data.json — cleanest: returns JSON without JS execution.
-      3. Common custom API endpoint guesses (e.g. /api/player/name/tag).
-      4. Full page HTML — last resort; parse embedded JSON blobs.
-    """
-    vtl_id      = f"{name}_{tag}"
-    encoded_id  = urllib.parse.quote(vtl_id)
-    profile_url = f"https://vtl.lol/id/{encoded_id}"
-    data_url    = f"{profile_url}/__data.json"
-
-    nav_hdrs = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-    }
-    json_hdrs = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Referer": "https://vtl.lol/",
-    }
-
-    # Candidate API paths to probe (vtl.lol may expose one of these)
     enc_name = urllib.parse.quote(name)
     enc_tag  = urllib.parse.quote(tag)
-    api_paths = [
-        f"/api/player/{enc_name}/{enc_tag}",
-        f"/api/profile/{enc_name}/{enc_tag}",
-        f"/api/stats/{enc_name}/{enc_tag}",
-        f"/api/v1/player/{enc_name}/{enc_tag}",
-        f"/api/v1/profile/{enc_name}/{enc_tag}",
-    ]
 
-    for impersonate in ("chrome124", "chrome120", "chrome110", "safari17_0"):
-        try:
-            session = requests.Session()
+    # 1. Account → puuid + region (region needed for match/mmr endpoints)
+    acc = _henrik_get(f"/valorant/v2/account/{enc_name}/{enc_tag}")
+    if not acc["ok"]:
+        return {"status": acc["status"], "error": acc["error"]}
 
-            # ── Step 1: warm-up to get CF clearance cookies ──────────────────
-            try:
-                session.get("https://vtl.lol/", impersonate=impersonate,
-                            headers=nav_hdrs, timeout=10)
-            except Exception:
-                pass  # cookies may still be set even on timeout
+    acc_data = acc["data"] or {}
+    puuid  = acc_data.get("puuid", "")
+    region = (acc_data.get("region") or "ap").lower()
+    if region not in VALID_REGIONS:
+        region = "ap"
 
-            # ── Step 2: SvelteKit __data.json ────────────────────────────────
-            try:
-                resp = session.get(data_url, impersonate=impersonate,
-                                   headers=json_hdrs, timeout=15)
-                if resp.status_code == 200:
-                    raw = resp.json()
-                    logger.info(f"vtl.lol __data.json OK ({impersonate})")
-                    candidate = _parse_vtl_sveltekit_nodes(raw) or raw
-                    stats = _normalise_vtl_stats(candidate)
-                    if stats:
-                        return {"status": 200, "stats": stats}
-                    logger.warning(f"vtl.lol __data.json unparseable: {str(raw)[:400]}")
-            except Exception as e:
-                logger.debug(f"vtl.lol __data.json ({impersonate}): {e}")
+    # Avatar from player card (v2 returns card as an id string; v1 as an object)
+    avatar_url = ""
+    card = acc_data.get("card")
+    if isinstance(card, dict):
+        avatar_url = card.get("small", "") or card.get("large", "")
+    elif isinstance(card, str) and card:
+        avatar_url = f"https://media.valorant-api.com/playercards/{card}/smallart.png"
 
-            # ── Step 3: API endpoint probes ───────────────────────────────────
-            for path in api_paths:
-                try:
-                    resp = session.get(f"https://vtl.lol{path}",
-                                       impersonate=impersonate,
-                                       headers=json_hdrs, timeout=10)
-                    if resp.status_code == 200:
-                        raw = resp.json()
-                        stats = _normalise_vtl_stats(raw)
-                        if stats:
-                            logger.info(f"vtl.lol API {path} OK ({impersonate})")
-                            return {"status": 200, "stats": stats}
-                except Exception:
-                    pass
+    # 2. Recent competitive matches (v4) → aggregate the target player's stats
+    matches_res = _henrik_get(
+        f"/valorant/v4/matches/{region}/pc/{enc_name}/{enc_tag}"
+        f"?mode=competitive&size={size}"
+    )
+    if not matches_res["ok"]:
+        return {"status": matches_res["status"], "error": matches_res["error"]}
 
-            # ── Step 4: full HTML page ────────────────────────────────────────
-            resp = session.get(profile_url, impersonate=impersonate,
-                               headers=nav_hdrs, timeout=15)
-            if resp.status_code == 200:
-                html = resp.text
-                logger.info(f"vtl.lol HTML OK ({impersonate}, {len(html)} bytes)")
+    matches = matches_res["data"] or []
+    # v4 returns data as a bare list; be defensive about a {"matches": [...]} wrapper
+    if isinstance(matches, dict):
+        matches = matches.get("matches") or matches.get("data") or []
+    if not isinstance(matches, list) or not matches:
+        return {"status": 404, "error": "No recent competitive matches found."}
 
-                # Search for embedded JSON blobs in <script> tags
-                for pat in (
-                    r'"(?:stats|player|profile|competitive)"\s*:\s*(\{[^\n<]{80,})',
-                    r'window\.__(?:DATA|STATE|INITIAL(?:_DATA|_STATE)?)__\s*=\s*(\{.{60,}?\})\s*[;\n]',
-                    r'<script[^>]*>\s*(\{[^<]{200,}\})\s*</script>',
-                ):
-                    m = re.search(pat, html, re.DOTALL)
-                    if m:
-                        try:
-                            raw = json.loads(m.group(1))
-                            stats = _normalise_vtl_stats(raw)
-                            if stats:
-                                return {"status": 200, "stats": stats}
-                        except Exception:
-                            pass
+    tot_k = tot_d = tot_a = 0
+    tot_hs = tot_body = tot_leg = 0
+    tot_dmg = 0.0
+    tot_rounds = 0
+    tot_score = 0
+    wins = losses = draws = 0
+    counted = 0
+    latest_rank = "Unranked"
+    latest_agent = ""
 
-                # Got through CF but couldn't parse — return partial result
-                return {"status": 200, "stats": None}
-
-            elif resp.status_code in (403, 503, 429):
-                logger.warning(f"vtl.lol CF block {resp.status_code} ({impersonate})")
-                continue
-            else:
-                logger.warning(f"vtl.lol HTTP {resp.status_code} ({impersonate})")
-
-        except Exception as e:
-            logger.warning(f"vtl.lol {impersonate} exception: {e}")
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        players = match.get("players")
+        # v4: players is a list. (Defensive: some shapes wrap in {"all_players": [...]})
+        if isinstance(players, dict):
+            players = players.get("all_players") or players.get("players") or []
+        if not isinstance(players, list):
             continue
 
-    return {"status": 403, "error": "vtl.lol blocked all requests (Cloudflare)"}
+        # Find the queried player by puuid (fallback to name/tag match)
+        me = None
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            if puuid and p.get("puuid") == puuid:
+                me = p
+                break
+            pn = (p.get("name") or "").lower()
+            pt = (p.get("tag") or "").lower()
+            if pn == name.lower() and pt == tag.lower():
+                me = p
+        if me is None:
+            continue
+
+        st = me.get("stats") or {}
+        k = int(_num(st.get("kills")))
+        d = int(_num(st.get("deaths")))
+        a = int(_num(st.get("assists")))
+        hs = int(_num(st.get("headshots")))
+        bs = int(_num(st.get("bodyshots")))
+        ls = int(_num(st.get("legshots")))
+        score = int(_num(st.get("score")))
+
+        # Skip empty/abandoned matches that have no shot data at all
+        if (k + d + a + hs + bs + ls) == 0:
+            continue
+
+        tot_k += k; tot_d += d; tot_a += a
+        tot_hs += hs; tot_body += bs; tot_leg += ls
+        tot_score += score
+        tot_dmg += _player_damage(st)
+
+        # Team + win/loss
+        team_id = me.get("team_id") or me.get("team") or ""
+        teams = match.get("teams")
+        my_team = None
+        if isinstance(teams, list):
+            for t in teams:
+                t_id = t.get("team_id") or t.get("team") if isinstance(t, dict) else None
+                if t_id is not None and str(t_id).lower() == str(team_id).lower():
+                    my_team = t
+                    break
+        elif isinstance(teams, dict):
+            # older shape: {"red": {...}, "blue": {...}} or {"red": <rounds>}
+            my_team = teams.get(str(team_id).lower())
+
+        match_rounds = 0
+        if isinstance(my_team, dict):
+            won_flag = my_team.get("won")
+            rounds = my_team.get("rounds")
+            if isinstance(rounds, dict):
+                rw = int(_num(rounds.get("won")))
+                rl = int(_num(rounds.get("lost")))
+                match_rounds = rw + rl
+                if won_flag is None:
+                    won_flag = rw > rl
+            if won_flag is True:
+                wins += 1
+            elif won_flag is False:
+                losses += 1
+            else:
+                draws += 1
+
+        # Fallback rounds count from metadata if team rounds were unavailable
+        if match_rounds == 0:
+            meta = match.get("metadata") or {}
+            match_rounds = int(_num(meta.get("rounds_played") or meta.get("total_rounds")))
+        tot_rounds += match_rounds
+
+        # Most-recent match (first in list) supplies current rank + agent
+        if counted == 0:
+            tier = me.get("tier")
+            if isinstance(tier, dict):
+                latest_rank = tier.get("name") or latest_rank
+            agent = me.get("agent")
+            if isinstance(agent, dict):
+                latest_agent = agent.get("name") or ""
+        counted += 1
+
+    if counted == 0:
+        return {"status": 404, "error": "Could not find the player's stats in recent matches."}
+
+    # Aggregate metrics
+    kdr      = tot_k / max(tot_d, 1)
+    shots    = tot_hs + tot_body + tot_leg
+    hs_pct   = (tot_hs / shots * 100) if shots else 0.0
+    decided  = wins + losses
+    winrate  = (wins / decided * 100) if decided else 0.0
+    dpr      = (tot_dmg / tot_rounds) if tot_rounds else 0.0
+    acs      = (tot_score / tot_rounds) if tot_rounds else 0.0
+
+    # 3. Current rank from MMR (authoritative); fall back to latest match tier
+    rank_name = latest_rank or "Unranked"
+    mmr_res = _henrik_get(f"/valorant/v3/mmr/{region}/pc/{enc_name}/{enc_tag}")
+    if mmr_res["ok"]:
+        cur = (mmr_res["data"] or {}).get("current") or {}
+        tier = cur.get("tier") or {}
+        if isinstance(tier, dict) and tier.get("name"):
+            rank_name = tier["name"]
+
+    est_score = calculate_tracker_score(kdr, hs_pct, winrate, dpr)
+
+    return {
+        "status": 200,
+        "stats": {
+            "kdr":        kdr,
+            "kills":      tot_k,
+            "deaths":     tot_d,
+            "assists":    tot_a,
+            "hs_pct":     hs_pct,
+            "winrate":    winrate,
+            "matches":    counted,
+            "wins":       wins,
+            "losses":     losses,
+            "draws":      draws,
+            "dpr":        dpr,
+            "acs":        acs,
+            "rank_name":  rank_name,
+            "avatar_url": avatar_url,
+            "agent":      latest_agent,
+            "tracker_score": est_score,
+            "sample_size": counted,
+        },
+    }
 
 
-async def get_vtl_profile(name: str, tag: str) -> dict:
-    """Async wrapper — runs fetch_vtl_profile_sync in a thread pool."""
-    return await asyncio.to_thread(fetch_vtl_profile_sync, name, tag)
+async def get_vtl_profile(name: str, tag: str, size: int = 10) -> dict:
+    """Async wrapper — aggregates HenrikDev competitive matches in a thread."""
+    return await asyncio.to_thread(fetch_vtl_profile_sync, name, tag, size)
