@@ -698,11 +698,23 @@ async def recent(ctx, *, riot_id: str = None):
       embed.add_field(name="Season WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
 
       m_tracker_score = m.get("match_tracker_score")
+      trn_delta = 0
       if m_tracker_score and s_tracker_score:
         trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
-        embed.add_field(name="Tracker Score (Season)", value=f"{s_tracker_score} ({fmt_delta(trn_delta)})", inline=True)
+        embed.add_field(name="Tracker Score (Season)", value=f"{int(s_tracker_score)} ({fmt_delta(trn_delta)})", inline=True)
         embed.add_field(name="Tracker Score (Match)", value=str(m_tracker_score), inline=True)
         embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+      # Step back in time for the next older match
+      s_kills = p_kills
+      s_deaths = p_deaths
+      s_matches = p_matches
+      s_wins = p_wins
+      s_hs = p_hs
+      s_body -= m["m_body"]
+      s_leg -= m["m_leg"]
+      if s_tracker_score:
+        s_tracker_score -= trn_delta
 
       if m["agent_image"]:
         embed.set_thumbnail(url=m["agent_image"])
