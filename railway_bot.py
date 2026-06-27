@@ -794,7 +794,7 @@ async def tracker(ctx, *, riot_id: str = None):
 
 @bot.command(name='vtl')
 async def vtl(ctx, *, riot_id: str = None):
-  """Link to ValoTool Lookup profile (e.g. !vtl TenZ#0303)"""
+  """Season stats from vtl.lol (works for private Tracker.gg profiles)"""
   if not riot_id or '#' not in riot_id:
     await ctx.send("Usage: `!vtl <name>#<tag>`\nExample: `!vtl TenZ#0303`")
     return
@@ -803,20 +803,90 @@ async def vtl(ctx, *, riot_id: str = None):
   name = name.strip()
   tag = tag.strip()
 
-  # vtl.lol URL format: /id/{name}_{tag}
   vtl_url = f"https://vtl.lol/id/{urllib.parse.quote(name)}_{urllib.parse.quote(tag)}"
+  msg = await ctx.send(f"Fetching vtl.lol profile for **{name}#{tag}**...")
 
-  embed = discord.Embed(
-    title=f"ValoTool Lookup: {name}#{tag}",
-    description=(
-      f"[View profile on vtl.lol]({vtl_url})\n\n"
-      f"ValoTool Lookup can display stats even when a player's "
-      f"Tracker.gg profile is set to private."
-    ),
-    color=discord.Color.blue()
-  )
-  embed.set_footer(text="vtl.lol")
-  await ctx.send(embed=embed)
+  try:
+    result = await valorant_api.get_vtl_profile(name, tag)
+    stats = result.get("stats")
+
+    # ── Fallback: link-only embed ─────────────────────────────────────────
+    if result["status"] != 200 or stats is None:
+      if result["status"] == 403:
+        note = "\n*(Cloudflare blocked the data fetch — view manually via the link)*"
+      else:
+        note = "\n*(Stats page loaded but data could not be auto-parsed — view manually)*"
+
+      embed = discord.Embed(
+        title=f"ValoTool Lookup: {name}#{tag}",
+        description=(
+          f"[View profile on vtl.lol]({vtl_url})\n\n"
+          f"ValoTool Lookup shows stats even for private Tracker.gg profiles.{note}"
+        ),
+        color=discord.Color.blue()
+      )
+      embed.set_footer(text="vtl.lol")
+      await msg.edit(content="", embed=embed)
+      return
+
+    # ── Rich stats embed ──────────────────────────────────────────────────
+    kdr      = stats.get("kdr", 0.0)
+    hs_pct   = stats.get("hs_pct", 0.0)
+    winrate  = stats.get("winrate", 0.0)
+    dpr      = stats.get("dpr", 0.0)
+    kills    = stats.get("kills", 0)
+    deaths   = stats.get("deaths", 0)
+    assists  = stats.get("assists", 0)
+    matches  = stats.get("matches", 0)
+    wins     = stats.get("wins", 0)
+    losses   = stats.get("losses", 0)
+    rank     = stats.get("rank_name", "Unknown")
+    avatar   = stats.get("avatar_url", "")
+
+    est_score = valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
+
+    embed = discord.Embed(
+      title=f"ValoTool Lookup: {name}#{tag}",
+      url=vtl_url,
+      color=discord.Color.dark_teal()
+    )
+
+    embed.add_field(name="Rank", value=rank, inline=True)
+    embed.add_field(name="Est. Tracker Score", value=f"~{est_score}", inline=True)
+    embed.add_field(name="​", value="​", inline=True)
+
+    embed.add_field(name="KDR", value=f"{kdr:.2f}", inline=True)
+    embed.add_field(name="HS%", value=f"{hs_pct:.1f}%", inline=True)
+    embed.add_field(name="Winrate", value=f"{winrate:.1f}%", inline=True)
+
+    embed.add_field(name="Matches", value=str(matches), inline=True)
+    if wins > 0 or losses > 0:
+      embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
+    else:
+      embed.add_field(name="​", value="​", inline=True)
+    if dpr > 0:
+      embed.add_field(name="DMG/Round", value=f"{dpr:.1f}", inline=True)
+    else:
+      embed.add_field(name="​", value="​", inline=True)
+
+    if kills > 0 or deaths > 0 or assists > 0:
+      embed.add_field(name="K / D / A", value=f"{kills} / {deaths} / {assists}", inline=True)
+
+    if avatar:
+      embed.set_thumbnail(url=avatar)
+
+    embed.set_footer(text="Data from vtl.lol • Est. Tracker Score is approximated (not official)")
+    await msg.edit(content="", embed=embed)
+
+  except Exception as e:
+    logger.error(f"Error in vtl command: {e}")
+    embed = discord.Embed(
+      title=f"ValoTool Lookup: {name}#{tag}",
+      description=f"[View profile on vtl.lol]({vtl_url})",
+      color=discord.Color.blue()
+    )
+    embed.set_footer(text="vtl.lol")
+    await msg.edit(content="", embed=embed)
 
 
 @bot.command(name='roll')
@@ -1180,7 +1250,7 @@ async def commands_cmd(ctx):
     commands_list = [
       ('recent <name>#<tag> [count]', 'Recent match stats (1-3 matches)'),
       ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
-      ('vtl <name>#<tag>', 'Link to ValoTool Lookup profile'),
+      ('vtl <name>#<tag>', 'Stats from vtl.lol (works for private profiles)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),
