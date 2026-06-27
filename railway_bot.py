@@ -672,38 +672,37 @@ async def recent(ctx, *, riot_id: str = None):
       else:
         embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-      # Season deltas only on the first (most recent) match
-      if idx == 0:
-        current_kdr = s_kills / max(s_deaths, 1)
-        p_kills = s_kills - m["kills"]
-        p_deaths = s_deaths - m["deaths"]
-        prev_kdr = p_kills / max(p_deaths, 1)
-        kdr_delta = current_kdr - prev_kdr
+      # Season deltas for each match
+      current_kdr = s_kills / max(s_deaths, 1)
+      p_kills = s_kills - m["kills"]
+      p_deaths = s_deaths - m["deaths"]
+      prev_kdr = p_kills / max(p_deaths, 1)
+      kdr_delta = current_kdr - prev_kdr
 
-        m_win = 1 if m["has_won"] else 0
-        current_wr = (s_wins / max(s_matches, 1)) * 100
-        p_matches = s_matches - 1
-        p_wins = s_wins - m_win
-        prev_wr = (p_wins / max(p_matches, 1)) * 100 if p_matches > 0 else 0
-        wr_delta = current_wr - prev_wr
+      m_win = 1 if m["has_won"] else 0
+      current_wr = (s_wins / max(s_matches, 1)) * 100
+      p_matches = s_matches - 1
+      p_wins = s_wins - m_win
+      prev_wr = (p_wins / max(p_matches, 1)) * 100 if p_matches > 0 else 0
+      wr_delta = current_wr - prev_wr
 
-        s_total = s_hs + s_body + s_leg
-        current_hs = (s_hs / max(s_total, 1)) * 100
-        p_hs = s_hs - m["m_hs"]
-        p_total = s_total - (m["m_hs"] + m["m_body"] + m["m_leg"])
-        prev_hs = (p_hs / max(p_total, 1)) * 100
-        hs_delta = current_hs - prev_hs
+      s_total = s_hs + s_body + s_leg
+      current_hs = (s_hs / max(s_total, 1)) * 100
+      p_hs = s_hs - m["m_hs"]
+      p_total = s_total - (m["m_hs"] + m["m_body"] + m["m_leg"])
+      prev_hs = (p_hs / max(p_total, 1)) * 100
+      hs_delta = current_hs - prev_hs
 
-        embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
-        embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
-        embed.add_field(name="Season WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
+      embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
+      embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
+      embed.add_field(name="Season WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
 
-        m_tracker_score = m.get("match_tracker_score")
-        if m_tracker_score and s_tracker_score:
-          trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
-          embed.add_field(name="Tracker Score (Season)", value=f"{s_tracker_score} ({fmt_delta(trn_delta)})", inline=True)
-          embed.add_field(name="Tracker Score (Match)", value=str(m_tracker_score), inline=True)
-          embed.add_field(name="\u200b", value="\u200b", inline=True)
+      m_tracker_score = m.get("match_tracker_score")
+      if m_tracker_score and s_tracker_score:
+        trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
+        embed.add_field(name="Tracker Score (Season)", value=f"{s_tracker_score} ({fmt_delta(trn_delta)})", inline=True)
+        embed.add_field(name="Tracker Score (Match)", value=str(m_tracker_score), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
 
       if m["agent_image"]:
         embed.set_thumbnail(url=m["agent_image"])
