@@ -793,13 +793,43 @@ async def tracker(ctx, *, riot_id: str = None):
 
 
 @bot.command(name='vtl')
-async def vtl(ctx, *, riot_id: str = None):
-  """Recent-form stats + estimated Tracker Score (works for private Tracker.gg profiles)"""
-  if not riot_id or '#' not in riot_id:
+async def vtl(ctx, *, args: str = None):
+  """Season stats + est. Tracker Score, or `!vtl recent` for recent matches (private profiles too)"""
+  if not args:
+    await ctx.send(
+      "Usage:\n"
+      "`!vtl <name>#<tag>` — season stats + estimated Tracker Score\n"
+      "`!vtl recent <name>#<tag> [count]` — recent match(es), 1-3"
+    )
+    return
+
+  args = args.strip()
+
+  # ── Subcommand: !vtl recent <name>#<tag> [count] ──────────────────────────
+  first_token = args.split(None, 1)[0].lower()
+  if first_token == "recent":
+    rest = args.split(None, 1)[1].strip() if len(args.split(None, 1)) > 1 else ""
+    if not rest or '#' not in rest:
+      await ctx.send("Usage: `!vtl recent <name>#<tag> [count]`\nExample: `!vtl recent TenZ#0303 3`")
+      return
+    parts = rest.rsplit(' ', 1)
+    count = 1
+    if len(parts) == 2 and parts[1].isdigit():
+      count = max(1, min(3, int(parts[1])))
+      rest = parts[0]
+    if '#' not in rest:
+      await ctx.send("Usage: `!vtl recent <name>#<tag> [count]`\nExample: `!vtl recent TenZ#0303 3`")
+      return
+    name, tag = rest.split('#', 1)
+    await _vtl_recent(ctx, name.strip(), tag.strip(), count)
+    return
+
+  # ── Season profile: !vtl <name>#<tag> ─────────────────────────────────────
+  if '#' not in args:
     await ctx.send("Usage: `!vtl <name>#<tag>`\nExample: `!vtl TenZ#0303`")
     return
 
-  name, tag = riot_id.split('#', 1)
+  name, tag = args.split('#', 1)
   name = name.strip()
   tag = tag.strip()
 
@@ -834,14 +864,18 @@ async def vtl(ctx, *, riot_id: str = None):
     kills     = stats.get("kills", 0)
     deaths    = stats.get("deaths", 0)
     assists   = stats.get("assists", 0)
-    sample    = stats.get("sample_size", stats.get("matches", 0))
+    sample    = stats.get("sample_size", 0)
+    matches   = stats.get("matches", sample)
     wins      = stats.get("wins", 0)
     losses    = stats.get("losses", 0)
     rank      = stats.get("rank_name", "Unranked")
     avatar    = stats.get("avatar_url", "")
+    has_season = stats.get("has_season_totals", False)
     est_score = stats.get("tracker_score") or valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
 
-    if stats.get("is_season"):
+    if has_season:
+      scope = f"**Season (current act)** — {matches} competitive matches\nRate stats below are from the last **{sample}** matches available"
+    elif stats.get("is_season"):
       scope = f"Current act — **{sample}** competitive match(es)"
       if stats.get("truncated"):
         scope += " (capped)"
@@ -859,27 +893,32 @@ async def vtl(ctx, *, riot_id: str = None):
     embed.add_field(name="Est. Tracker Score", value=f"~{est_score}", inline=True)
     embed.add_field(name="​", value="​", inline=True)
 
-    embed.add_field(name="KDR", value=f"{kdr:.2f}", inline=True)
-    embed.add_field(name="HS%", value=f"{hs_pct:.1f}%", inline=True)
+    # Season totals (authoritative from Riot MMR when available)
+    embed.add_field(name="Matches", value=str(matches), inline=True)
+    embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
     embed.add_field(name="Winrate", value=f"{winrate:.1f}%", inline=True)
 
-    embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
-    if dpr > 0:
-      embed.add_field(name="DMG/Round", value=f"{dpr:.1f}", inline=True)
-    else:
-      embed.add_field(name="​", value="​", inline=True)
-    if acs > 0:
-      embed.add_field(name="ACS", value=f"{acs:.0f}", inline=True)
-    else:
-      embed.add_field(name="​", value="​", inline=True)
+    # Rate stats (from the available match sample)
+    embed.add_field(name="KDR", value=f"{kdr:.2f}", inline=True)
+    embed.add_field(name="HS%", value=f"{hs_pct:.1f}%", inline=True)
+    embed.add_field(name="DMG/Round", value=f"{dpr:.1f}" if dpr > 0 else "—", inline=True)
 
+    embed.add_field(name="ACS", value=f"{acs:.0f}" if acs > 0 else "—", inline=True)
     if kills > 0 or deaths > 0 or assists > 0:
-      embed.add_field(name="K / D / A (total)", value=f"{kills} / {deaths} / {assists}", inline=True)
+      kda_label = f"K/D/A (last {sample})" if has_season else "K / D / A"
+      embed.add_field(name=kda_label, value=f"{kills} / {deaths} / {assists}", inline=True)
+    else:
+      embed.add_field(name="​", value="​", inline=True)
+    embed.add_field(name="​", value="​", inline=True)
 
     if avatar:
       embed.set_thumbnail(url=avatar)
 
-    embed.set_footer(text="Data from HenrikDev (Riot) • Tracker Score is estimated, not official • Works for private Tracker.gg profiles")
+    if has_season:
+      embed.set_footer(text="Season totals from Riot (MMR) • KDR/HS%/DMG/Score from last "
+                            f"{sample} matches HenrikDev has stored • Tracker Score estimated, not official")
+    else:
+      embed.set_footer(text="Data from HenrikDev (Riot) • Tracker Score estimated, not official • Works for private Tracker.gg profiles")
     await msg.edit(content="", embed=embed)
 
   except Exception as e:
@@ -891,6 +930,52 @@ async def vtl(ctx, *, riot_id: str = None):
     )
     embed.set_footer(text="HenrikDev (Riot)")
     await msg.edit(content="", embed=embed)
+
+
+async def _vtl_recent(ctx, name: str, tag: str, count: int):
+  """Handle `!vtl recent` — recent match details for a (possibly private) profile."""
+  msg = await ctx.send(f"Fetching {count} recent match(es) for **{name}#{tag}**...")
+  try:
+    result = await valorant_api.get_vtl_recent(name, tag, count)
+    if result.get("status") != 200:
+      await msg.edit(content=f"Error: {result.get('error', 'Unknown error')}")
+      return
+
+    matches = result["matches"]
+    embeds = []
+    for idx, m in enumerate(matches):
+      color = discord.Color.green() if m["has_won"] else discord.Color.red()
+      if m["result"] == "DRAW":
+        color = discord.Color.light_gray()
+
+      title = f"{name}#{tag}"
+      if len(matches) > 1:
+        title = f"Match {idx + 1}/{len(matches)} — {name}#{tag}"
+
+      embed = discord.Embed(
+        title=title,
+        description=f"**{m['result']}** ({m['rounds_won']} - {m['rounds_lost']}) on **{m['map_name']}** ({m['mode']})",
+        color=color
+      )
+      embed.add_field(name="Agent", value=m["agent"], inline=True)
+      embed.add_field(name="K/D/A", value=f"{m['kills']} / {m['deaths']} / {m['assists']}", inline=True)
+      embed.add_field(name="Score", value=str(m["score"]), inline=True)
+      embed.add_field(name="KDR", value=f"{m['match_kdr']:.2f}", inline=True)
+      embed.add_field(name="HS%", value=f"{m['match_hs_pct']:.1f}%", inline=True)
+      embed.add_field(name="Rank", value=m["rank_name"], inline=True)
+
+      if m["agent_image"]:
+        embed.set_thumbnail(url=m["agent_image"])
+      embed.set_footer(text="Data from HenrikDev (Riot) • Works for private Tracker.gg profiles")
+      embeds.append(embed)
+
+    await msg.edit(content="", embed=embeds[0])
+    for extra in embeds[1:]:
+      await ctx.send(embed=extra)
+
+  except Exception as e:
+    logger.error(f"Error in vtl recent command: {e}")
+    await msg.edit(content="An error occurred while fetching recent matches.")
 
 
 @bot.command(name='roll')
@@ -1254,7 +1339,8 @@ async def commands_cmd(ctx):
     commands_list = [
       ('recent <name>#<tag> [count]', 'Recent match stats (1-3 matches)'),
       ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
-      ('vtl <name>#<tag>', 'Recent-form stats + est. Tracker Score (private profiles too)'),
+      ('vtl <name>#<tag>', 'Season stats + est. Tracker Score (private profiles too)'),
+      ('vtl recent <name>#<tag> [count]', 'Recent match(es) for private profiles (1-3)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),

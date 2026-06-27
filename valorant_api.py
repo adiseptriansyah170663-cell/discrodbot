@@ -371,6 +371,49 @@ def _season_of(match: dict) -> str:
     return str(season or "")
 
 
+def _season_totals_from_mmr(mmr_data: dict, target_season: str) -> dict | None:
+    """
+    Riot-authoritative per-act match totals from the MMR `seasonal` array.
+    HenrikDev only *stores* a limited slice of match history, so the per-match
+    sample undercounts a player's real act; this gives the true games/wins for
+    the current act (matching tracker.gg's Season Profile count).
+    """
+    seasonal = (mmr_data or {}).get("seasonal")
+    if not isinstance(seasonal, list) or not seasonal:
+        return None
+
+    chosen = None
+    if target_season:
+        for s in seasonal:
+            if not isinstance(s, dict):
+                continue
+            sh = s.get("season") or {}
+            short = sh.get("short") if isinstance(sh, dict) else None
+            if short and short == target_season:
+                chosen = s
+                break
+    if chosen is None and not target_season:
+        # No act hint (fallback path) → use the act with the most games as "current"
+        chosen = max(
+            (s for s in seasonal if isinstance(s, dict)),
+            key=lambda s: _num(s.get("games")),
+            default=None,
+        )
+    if chosen is None:
+        return None
+
+    games = int(_num(chosen.get("games")))
+    wins  = int(_num(chosen.get("wins")))
+    if games <= 0:
+        return None
+    return {
+        "matches":  games,
+        "wins":     wins,
+        "losses":   max(games - wins, 0),
+        "winrate":  wins / games * 100,
+    }
+
+
 def _extract_match(match: dict, puuid: str, name: str, tag: str) -> dict | None:
     """
     Normalise one match into the queried player's stats, handling BOTH shapes:
@@ -616,16 +659,34 @@ def fetch_vtl_profile_sync(name: str, tag: str, max_matches: int = STORED_MAX_MA
     latest_agent = collected[0].get("agent", "")
     latest_tier  = collected[0].get("tier_name", "")
 
-    # 5. Current rank from MMR (authoritative); fall back to latest match tier
+    # 5. MMR → current rank + Riot-authoritative season totals (games/wins).
     rank_name = latest_tier or "Unranked"
+    season_totals = None
     mmr_res = _henrik_get(f"/valorant/v3/mmr/{region}/pc/{enc_name}/{enc_tag}")
     if mmr_res["ok"]:
-        cur = (mmr_res["data"] or {}).get("current") or {}
+        mmr_data = mmr_res["data"] or {}
+        cur = mmr_data.get("current") or {}
         tier = cur.get("tier") or {}
         if isinstance(tier, dict) and tier.get("name"):
             rank_name = tier["name"]
+        if not used_fallback:
+            season_totals = _season_totals_from_mmr(mmr_data, target_season)
 
-    est_score = calculate_tracker_score(kdr, hs_pct, winrate, dpr)
+    # Headline season counts: prefer Riot MMR totals (match tracker.gg); the
+    # per-match sample only covers what HenrikDev has stored.
+    if season_totals:
+        s_matches = season_totals["matches"]
+        s_wins    = season_totals["wins"]
+        s_losses  = season_totals["losses"]
+        s_winrate = season_totals["winrate"]
+        has_season_totals = True
+    else:
+        s_matches, s_wins, s_losses, s_winrate = counted, wins, losses, winrate
+        has_season_totals = False
+
+    # Score uses the authoritative season winrate when available, with the
+    # rate stats (KDR/HS/DPR) from the available match sample.
+    est_score = calculate_tracker_score(kdr, hs_pct, s_winrate, dpr)
 
     return {
         "status": 200,
@@ -635,10 +696,10 @@ def fetch_vtl_profile_sync(name: str, tag: str, max_matches: int = STORED_MAX_MA
             "deaths":     tot_d,
             "assists":    tot_a,
             "hs_pct":     hs_pct,
-            "winrate":    winrate,
-            "matches":    counted,
-            "wins":       wins,
-            "losses":     losses,
+            "winrate":    s_winrate,
+            "matches":    s_matches,
+            "wins":       s_wins,
+            "losses":     s_losses,
             "draws":      draws,
             "dpr":        dpr,
             "acs":        acs,
@@ -647,6 +708,7 @@ def fetch_vtl_profile_sync(name: str, tag: str, max_matches: int = STORED_MAX_MA
             "agent":      latest_agent,
             "tracker_score": est_score,
             "sample_size": counted,
+            "has_season_totals": has_season_totals,
             "season":     target_season or "",
             "is_season":  bool(target_season) and not used_fallback,
             "truncated":  truncated,
@@ -657,3 +719,127 @@ def fetch_vtl_profile_sync(name: str, tag: str, max_matches: int = STORED_MAX_MA
 async def get_vtl_profile(name: str, tag: str, max_matches: int = STORED_MAX_MATCHES) -> dict:
     """Async wrapper — aggregates the player's current-act matches in a thread."""
     return await asyncio.to_thread(fetch_vtl_profile_sync, name, tag, max_matches)
+
+
+# ─── !vtl recent — per-match details (like !recent, but Riot-direct) ────────
+
+def _extract_match_detail(match: dict, puuid: str, name: str, tag: str) -> dict | None:
+    """Display-ready per-match details from a v4 match (agent, map, result, KDA…)."""
+    base = _extract_match(match, puuid, name, tag)
+    if base is None:
+        return None
+
+    meta = match.get("metadata") or match.get("meta") or {}
+    mp = meta.get("map")
+    map_name = mp.get("name") if isinstance(mp, dict) else (mp or "Unknown")
+    q = meta.get("queue")
+    mode = (q.get("name") if isinstance(q, dict) else q) or meta.get("mode") or "Competitive"
+
+    # Locate the player again for agent id (image) + rank name
+    agent_image = ""
+    rank_name = base.get("tier_name") or "Unranked"
+    players = match.get("players")
+    if isinstance(players, dict):
+        players = players.get("all_players") or players.get("players") or []
+    if isinstance(players, list):
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            if (puuid and p.get("puuid") == puuid) or (
+                (p.get("name") or "").lower() == name.lower()
+                and (p.get("tag") or "").lower() == tag.lower()
+            ):
+                ag = p.get("agent") or {}
+                if isinstance(ag, dict) and ag.get("id"):
+                    agent_image = f"https://media.valorant-api.com/agents/{ag['id']}/displayicon.png"
+                break
+
+    won = base["won"]
+    result = "VICTORY" if won is True else "DEFEAT" if won is False else "DRAW"
+    shots = base["hs"] + base["bs"] + base["ls"]
+    return {
+        "map_name":   map_name,
+        "mode":       mode,
+        "agent":      base["agent"] or "Unknown",
+        "agent_image": agent_image,
+        "has_won":    won is True,
+        "result":     result,
+        "rounds_won": 0,   # filled in by the caller from the teams breakdown
+        "rounds_lost": 0,
+        "kills":      base["k"],
+        "deaths":     base["d"],
+        "assists":    base["a"],
+        "score":      base["score"],
+        "match_kdr":  base["k"] / max(base["d"], 1),
+        "match_hs_pct": (base["hs"] / shots * 100) if shots else 0.0,
+        "rank_name":  rank_name,
+    }
+
+
+def fetch_vtl_recent_sync(name: str, tag: str, count: int = 1) -> dict:
+    """Fetch the player's last `count` competitive matches (per-match details)."""
+    count = max(1, min(3, count))
+    enc_name = urllib.parse.quote(name)
+    enc_tag  = urllib.parse.quote(tag)
+
+    acc = _henrik_get(f"/valorant/v2/account/{enc_name}/{enc_tag}")
+    if not acc["ok"]:
+        return {"status": acc["status"], "error": acc["error"]}
+    acc_data = acc["data"] or {}
+    puuid  = acc_data.get("puuid", "")
+    region = (acc_data.get("region") or "ap").lower()
+    if region not in VALID_REGIONS:
+        region = "ap"
+
+    res = _henrik_get(
+        f"/valorant/v4/matches/{region}/pc/{enc_name}/{enc_tag}?mode=competitive&size={count}"
+    )
+    if not res["ok"]:
+        return {"status": res["status"], "error": res["error"]}
+
+    data = res["data"] or []
+    if isinstance(data, dict):
+        data = data.get("matches") or data.get("data") or []
+    if not isinstance(data, list) or not data:
+        return {"status": 404, "error": "No recent competitive matches found."}
+
+    matches = []
+    for m in data[:count]:
+        # rounds won/lost need the per-team breakdown; pull from teams here
+        detail = _extract_match_detail(m, puuid, name, tag)
+        if detail is None:
+            continue
+        rw = rl = 0
+        teams = m.get("teams")
+        # find player's team_id then its rounds
+        me_team = None
+        players = m.get("players")
+        if isinstance(players, dict):
+            players = players.get("all_players") or players.get("players") or []
+        if isinstance(players, list):
+            for p in players:
+                if isinstance(p, dict) and (
+                    (puuid and p.get("puuid") == puuid)
+                    or ((p.get("name") or "").lower() == name.lower()
+                        and (p.get("tag") or "").lower() == tag.lower())
+                ):
+                    me_team = p.get("team_id") or p.get("team")
+                    break
+        if isinstance(teams, list) and me_team is not None:
+            for t in teams:
+                if isinstance(t, dict) and str(t.get("team_id") or t.get("team")).lower() == str(me_team).lower():
+                    r = t.get("rounds") or {}
+                    rw, rl = int(_num(r.get("won"))), int(_num(r.get("lost")))
+                    break
+        detail["rounds_won"] = rw
+        detail["rounds_lost"] = rl
+        matches.append(detail)
+
+    if not matches:
+        return {"status": 404, "error": "Could not parse recent match data."}
+    return {"status": 200, "matches": matches}
+
+
+async def get_vtl_recent(name: str, tag: str, count: int = 1) -> dict:
+    """Async wrapper — fetches recent match details for a (possibly private) profile."""
+    return await asyncio.to_thread(fetch_vtl_recent_sync, name, tag, count)
