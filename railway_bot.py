@@ -8,6 +8,7 @@ import os
 import random
 import logging
 from collections import deque
+import urllib.parse
 from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
 
@@ -605,108 +606,217 @@ async def hello(ctx):
 
 @bot.command(name='recent')
 async def recent(ctx, *, riot_id: str = None):
-  """Fetch recent Valorant match and stats (e.g. !recent TenZ#0303)"""
+  """Fetch recent Valorant match(es) (e.g. !recent TenZ#0303 or !recent TenZ#0303 3)"""
   if not riot_id or '#' not in riot_id:
-    await ctx.send("Please provide a valid Riot ID! Example: `!recent TenZ#0303`")
+    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent TenZ#0303` or `!recent TenZ#0303 3`")
     return
-    
+
+  # Parse count from the end of the input (e.g. "TenZ#0303 2")
+  parts = riot_id.rsplit(' ', 1)
+  count = 1
+  if len(parts) == 2 and parts[1].isdigit():
+    count = max(1, min(3, int(parts[1])))
+    riot_id = parts[0]
+
+  if '#' not in riot_id:
+    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent TenZ#0303` or `!recent TenZ#0303 3`")
+    return
+
   name, tag = riot_id.split('#', 1)
   name = name.strip()
   tag = tag.strip()
-  
-  msg = await ctx.send(f"Fetching recent match data for **{name}#{tag}**...")
-  
+
+  msg = await ctx.send(f"Fetching {count} recent match(es) for **{name}#{tag}**...")
+
   try:
-    stats = await valorant_api.get_valorant_stats(name, tag)
+    stats = await valorant_api.get_valorant_stats(name, tag, count=count)
     if stats["status"] != 200:
-      await msg.edit(content=f"Error fetching data: {stats.get('error', 'Unknown error')}")
+      await msg.edit(content=f"Error: {stats.get('error', 'Unknown error')}")
       return
-      
-    agent = stats["agent"]
-    kills = stats["kills"]
-    deaths = stats["deaths"]
-    assists = stats["assists"]
-    score = stats["score"]
-    
-    current_rank = stats["rank_name"]
+
+    matches = stats["matches"]
     s_tracker_score = stats["season_tracker_score"]
-    m_tracker_score = stats["match_tracker_score"]
-    
-    # Delta Math (KDR)
     s_kills, s_deaths = stats["s_kills"], stats["s_deaths"]
-    current_kdr = s_kills / max(s_deaths, 1)
-    p_kills = s_kills - kills
-    p_deaths = s_deaths - deaths
-    prev_kdr = p_kills / max(p_deaths, 1)
-    kdr_delta = current_kdr - prev_kdr
-    
-    # Delta Math (Winrate)
     s_matches, s_wins = stats["s_matches"], stats["s_wins"]
-    m_win = 1 if stats["has_won"] else 0
-    current_wr = (s_wins / max(s_matches, 1)) * 100
-    p_matches = s_matches - 1
-    p_wins = s_wins - m_win
-    prev_wr = (p_wins / max(p_matches, 1)) * 100 if p_matches > 0 else 0
-    wr_delta = current_wr - prev_wr
-    
-    # Delta Math (HS%)
     s_hs, s_body, s_leg = stats["s_hs"], stats["s_body"], stats["s_leg"]
-    m_hs, m_body, m_leg = stats["m_hs"], stats["m_body"], stats["m_leg"]
-    s_total = s_hs + s_body + s_leg
-    current_hs = (s_hs / max(s_total, 1)) * 100
-    
-    p_hs = s_hs - m_hs
-    p_total = s_total - (m_hs + m_body + m_leg)
-    prev_hs = (p_hs / max(p_total, 1)) * 100
-    hs_delta = current_hs - prev_hs
-    
-    # Win/Loss formatting
-    win_status = stats["result"]
-    rounds_won = stats["rounds_won"]
-    rounds_lost = stats["rounds_lost"]
-    
-    color = discord.Color.green() if stats["has_won"] else discord.Color.red()
-    if win_status == "DRAW":
-      color = discord.Color.light_gray()
-      
-    embed = discord.Embed(
-      title=f"Recent Match: {name}#{tag}",
-      description=f"**{win_status}** ({rounds_won} - {rounds_lost}) on **{stats['map_name']}** ({stats['mode']})",
-      color=color
-    )
-    
-    embed.add_field(name="Agent", value=agent, inline=True)
-    embed.add_field(name="Match K/D/A", value=f"{kills} / {deaths} / {assists}", inline=True)
-    embed.add_field(name="Match Score", value=str(score), inline=True)
-    
+
     def fmt_delta(val, is_pct=False):
       sign = "+" if val > 0 else ""
       pct = "%" if is_pct else ""
       return f"{sign}{val:.2f}{pct}"
-    
-    embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
-    embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
-    embed.add_field(name="Season Winrate", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
-    
-    # Tracker Score formatting (Match vs Season Avg)
-    if m_tracker_score and s_tracker_score:
-      trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
-      embed.add_field(name="Season Tracker Score", value=f"**{s_tracker_score}** ({fmt_delta(trn_delta)})", inline=False)
-      embed.add_field(name="Match Tracker Score", value=f"{m_tracker_score}", inline=False)
-      
-    if current_rank != "Unranked":
-      embed.add_field(name="Rank", value=current_rank, inline=True)
-      
-    if stats["agent_image"]:
-      embed.set_thumbnail(url=stats["agent_image"])
-      
-    embed.set_footer(text="Data provided by Tracker.gg")
-    
-    await msg.edit(content="", embed=embed)
-    
+
+    embeds = []
+    for idx, m in enumerate(matches):
+      win_status = m["result"]
+      color = discord.Color.green() if m["has_won"] else discord.Color.red()
+      if win_status == "DRAW":
+        color = discord.Color.light_gray()
+
+      title = f"{name}#{tag}"
+      if len(matches) > 1:
+        title = f"Match {idx + 1}/{len(matches)} - {name}#{tag}"
+
+      embed = discord.Embed(
+        title=title,
+        description=f"**{win_status}** ({m['rounds_won']} - {m['rounds_lost']}) on **{m['map_name']}** ({m['mode']})",
+        color=color
+      )
+
+      embed.add_field(name="Agent", value=m["agent"], inline=True)
+      embed.add_field(name="K/D/A", value=f"{m['kills']} / {m['deaths']} / {m['assists']}", inline=True)
+      embed.add_field(name="Score", value=str(m["score"]), inline=True)
+      embed.add_field(name="KDR", value=f"{m['match_kdr']:.2f}", inline=True)
+      embed.add_field(name="HS%", value=f"{m['match_hs_pct']:.1f}%", inline=True)
+
+      if m["rank_name"] != "Unranked":
+        embed.add_field(name="Rank", value=m["rank_name"], inline=True)
+      else:
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+      # Season deltas only on the first (most recent) match
+      if idx == 0:
+        current_kdr = s_kills / max(s_deaths, 1)
+        p_kills = s_kills - m["kills"]
+        p_deaths = s_deaths - m["deaths"]
+        prev_kdr = p_kills / max(p_deaths, 1)
+        kdr_delta = current_kdr - prev_kdr
+
+        m_win = 1 if m["has_won"] else 0
+        current_wr = (s_wins / max(s_matches, 1)) * 100
+        p_matches = s_matches - 1
+        p_wins = s_wins - m_win
+        prev_wr = (p_wins / max(p_matches, 1)) * 100 if p_matches > 0 else 0
+        wr_delta = current_wr - prev_wr
+
+        s_total = s_hs + s_body + s_leg
+        current_hs = (s_hs / max(s_total, 1)) * 100
+        p_hs = s_hs - m["m_hs"]
+        p_total = s_total - (m["m_hs"] + m["m_body"] + m["m_leg"])
+        prev_hs = (p_hs / max(p_total, 1)) * 100
+        hs_delta = current_hs - prev_hs
+
+        embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
+        embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
+        embed.add_field(name="Season WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
+
+        m_tracker_score = m.get("match_tracker_score")
+        if m_tracker_score and s_tracker_score:
+          trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
+          embed.add_field(name="Tracker Score (Season)", value=f"{s_tracker_score} ({fmt_delta(trn_delta)})", inline=True)
+          embed.add_field(name="Tracker Score (Match)", value=str(m_tracker_score), inline=True)
+          embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+      if m["agent_image"]:
+        embed.set_thumbnail(url=m["agent_image"])
+
+      embed.set_footer(text="Data from Tracker.gg")
+      embeds.append(embed)
+
+    # Send first embed as edit to the loading message, rest as new messages
+    await msg.edit(content="", embed=embeds[0])
+    for extra_embed in embeds[1:]:
+      await ctx.send(embed=extra_embed)
+
   except Exception as e:
     logger.error(f"Error in recent command: {e}")
-    await msg.edit(content=f"An error occurred while fetching the stats.")
+    await msg.edit(content="An error occurred while fetching the stats.")
+
+
+@bot.command(name='tracker')
+async def tracker(ctx, *, riot_id: str = None):
+  """Show season profile stats from Tracker.gg (e.g. !tracker TenZ#0303)"""
+  if not riot_id or '#' not in riot_id:
+    await ctx.send("Usage: `!tracker <name>#<tag>`\nExample: `!tracker TenZ#0303`")
+    return
+
+  name, tag = riot_id.split('#', 1)
+  name = name.strip()
+  tag = tag.strip()
+
+  msg = await ctx.send(f"Fetching season profile for **{name}#{tag}**...")
+
+  try:
+    profile = await valorant_api.get_season_profile(name, tag)
+
+    if profile["status"] == 451:
+      await msg.edit(
+        content=f"This profile is private on Tracker.gg.\n"
+                f"Try `!vtl {name}#{tag}` to view their stats on ValoTool Lookup instead."
+      )
+      return
+
+    if profile["status"] != 200:
+      await msg.edit(content=f"Error: {profile.get('error', 'Unknown error')}")
+      return
+
+    embed = discord.Embed(
+      title=f"Season Profile: {name}#{tag}",
+      color=discord.Color.dark_teal()
+    )
+
+    embed.add_field(name="Rank", value=profile["rank_name"], inline=True)
+    embed.add_field(name="Tracker Score", value=str(profile["tracker_score"]), inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    embed.add_field(name="KDR", value=f"{profile['kdr']:.2f}", inline=True)
+    embed.add_field(name="HS%", value=f"{profile['hs_pct']:.1f}%", inline=True)
+    embed.add_field(name="Winrate", value=f"{profile['winrate']:.1f}%", inline=True)
+
+    embed.add_field(name="Matches", value=str(profile["matches_played"]), inline=True)
+    embed.add_field(name="W / L", value=f"{profile['matches_won']} / {profile['matches_lost']}", inline=True)
+    embed.add_field(name="DMG/Round", value=f"{profile['damage_per_round']:.1f}", inline=True)
+
+    embed.add_field(name="K / D / A", value=f"{profile['kills']} / {profile['deaths']} / {profile['assists']}", inline=True)
+    if profile["kast"]:
+      embed.add_field(name="KAST", value=f"{profile['kast']:.1f}%", inline=True)
+    else:
+      embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    # Top agents
+    if profile["top_agents"]:
+      agent_lines = []
+      for a in profile["top_agents"]:
+        wr = (a["wins"] / max(a["matches"], 1)) * 100
+        agent_lines.append(f"{a['name']} -- {a['matches']} games, {wr:.0f}% WR, {a['kdr']:.2f} KDR")
+      embed.add_field(name="Top Agents", value="\n".join(agent_lines), inline=False)
+
+    if profile.get("avatar_url"):
+      embed.set_thumbnail(url=profile["avatar_url"])
+
+    embed.set_footer(text="Data from Tracker.gg")
+    await msg.edit(content="", embed=embed)
+
+  except Exception as e:
+    logger.error(f"Error in tracker command: {e}")
+    await msg.edit(content="An error occurred while fetching the profile.")
+
+
+@bot.command(name='vtl')
+async def vtl(ctx, *, riot_id: str = None):
+  """Link to ValoTool Lookup profile (e.g. !vtl TenZ#0303)"""
+  if not riot_id or '#' not in riot_id:
+    await ctx.send("Usage: `!vtl <name>#<tag>`\nExample: `!vtl TenZ#0303`")
+    return
+
+  name, tag = riot_id.split('#', 1)
+  name = name.strip()
+  tag = tag.strip()
+
+  # vtl.lol URL format: /id/{name}_{tag}
+  vtl_url = f"https://vtl.lol/id/{urllib.parse.quote(name)}_{urllib.parse.quote(tag)}"
+
+  embed = discord.Embed(
+    title=f"ValoTool Lookup: {name}#{tag}",
+    description=(
+      f"[View profile on vtl.lol]({vtl_url})\n\n"
+      f"ValoTool Lookup can display stats even when a player's "
+      f"Tracker.gg profile is set to private."
+    ),
+    color=discord.Color.blue()
+  )
+  embed.set_footer(text="vtl.lol")
+  await ctx.send(embed=embed)
 
 
 @bot.command(name='roll')
@@ -1068,6 +1178,9 @@ async def commands_cmd(ctx):
     )
     
     commands_list = [
+      ('recent <name>#<tag> [count]', 'Recent match stats (1-3 matches)'),
+      ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
+      ('vtl <name>#<tag>', 'Link to ValoTool Lookup profile'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),
@@ -1079,8 +1192,6 @@ async def commands_cmd(ctx):
       ('clear', 'Clear queue'),
       ('hello', 'Say hello'),
       ('roll [max]', 'Roll number'),
-      ('skin list', 'List available osu! skins for rendering'),
-      ('skin set <id>', 'Set your preferred rendering skin'),
       ('commands', 'Show this message'),
     ]
     
