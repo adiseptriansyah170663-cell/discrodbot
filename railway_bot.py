@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Get Discord token
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 if not DISCORD_TOKEN:
-  logger.error('ERROR: DISCORD_TOKEN not found in environment variables!')
+  logger.error('DISCORD_TOKEN not found in environment variables!')
   raise ValueError('DISCORD_TOKEN is required')
 
 # FFmpeg path - Railway has ffmpeg pre-installed
@@ -135,7 +135,7 @@ def fetch_piped_stream(video_id: str) -> dict:
 
 # ---------- yt-dlp fallback instances ----------
 def get_ytdl_instances():
-  """yt-dlp fallback instances (cookies + mobile client). Used when Piped fails."""
+  """yt-dlp fallback instances (cookies and mobile client). Used when Piped fails."""
   has_cookies = os.path.exists('cookies.txt')
   instances = []
 
@@ -390,7 +390,7 @@ class CancelButton(discord.ui.Button):
 
 
 class SearchView(discord.ui.View):
-  """View with dropdown + cancel for search results"""
+  """View with dropdown and cancel for search results"""
 
   def __init__(self, results: list, author_id: int):
     super().__init__(timeout=SEARCH_TIMEOUT)
@@ -467,14 +467,14 @@ class GuildPlayer:
       except FileNotFoundError:
         logger.error(f'FFmpeg not found: {FFMPEG_PATH}')
         await self.channel.send(
-          'ERROR: FFmpeg not installed. Contact bot owner.'
+          'FFmpeg not installed. Contact bot owner.'
         )
         await self._cleanup()
         return
         
       except Exception as e:
         logger.error(f'Playback error: {type(e).__name__}: {e}')
-        await self.channel.send(f'ERROR: Playback failed: {str(e)[:100]}')
+        await self.channel.send(f'Playback failed: {str(e)[:100]}')
         self.current = None
         self.is_playing = False
         continue
@@ -574,7 +574,7 @@ async def on_ready():
   logger.info(f'Bot logged in as {bot.user.name}')
   logger.info(f'Connected to {len(bot.guilds)} server(s)')
   await bot.change_presence(
-    activity=discord.Game(name='!help for commands')
+    activity=discord.Game(name='!commands for commands')
   )
 
 
@@ -586,7 +586,7 @@ async def on_command_error(ctx, error):
   
   logger.error(f'Command error: {error}')
   try:
-    await ctx.send(f'ERROR: {str(error)[:100]}')
+    await ctx.send(f'{str(error)[:100]}')
   except:
     pass
 
@@ -606,20 +606,20 @@ async def hello(ctx):
 
 @bot.command(name='recent')
 async def recent(ctx, *, riot_id: str = None):
-  """Fetch recent Valorant match(es) (e.g. !recent TenZ#0303 or !recent TenZ#0303 3)"""
+  """Fetch recent Valorant match(es) (e.g. !recent abcde#1234 or !recent abcde#1234 3)"""
   if not riot_id or '#' not in riot_id:
-    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent TenZ#0303` or `!recent TenZ#0303 3`")
+    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent abcde#1234` or `!recent abcde#1234 3`")
     return
 
-  # Parse count from the end of the input (e.g. "TenZ#0303 2")
+  # Parse count from the end of the input (e.g. "abcde#1234 2")
   parts = riot_id.rsplit(' ', 1)
   count = 1
   if len(parts) == 2 and parts[1].isdigit():
-    count = max(1, min(3, int(parts[1])))
+    count = max(1, min(5, int(parts[1])))
     riot_id = parts[0]
 
   if '#' not in riot_id:
-    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent TenZ#0303` or `!recent TenZ#0303 3`")
+    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent abcde#1234` or `!recent abcde#1234 3`")
     return
 
   name, tag = riot_id.split('#', 1)
@@ -631,7 +631,7 @@ async def recent(ctx, *, riot_id: str = None):
   try:
     stats = await valorant_api.get_valorant_stats(name, tag, count=count)
     if stats["status"] != 200:
-      await msg.edit(content=f"Error: {stats.get('error', 'Unknown error')}")
+      await msg.edit(content=f"{stats.get('error', 'Unknown error')}")
       return
 
     matches = stats["matches"]
@@ -641,9 +641,8 @@ async def recent(ctx, *, riot_id: str = None):
     s_hs, s_body, s_leg = stats["s_hs"], stats["s_body"], stats["s_leg"]
 
     def fmt_delta(val, is_pct=False):
-      sign = "+" if val > 0 else ""
       pct = "%" if is_pct else ""
-      return f"{sign}{val:.2f}{pct}"
+      return f"{val:.2f}{pct}"
 
     embeds = []
     for idx, m in enumerate(matches):
@@ -724,9 +723,9 @@ async def recent(ctx, *, riot_id: str = None):
 
 @bot.command(name='tracker')
 async def tracker(ctx, *, riot_id: str = None):
-  """Show season profile stats from Tracker.gg (e.g. !tracker TenZ#0303)"""
+  """Show season profile stats from Tracker.gg (e.g. !tracker abcde#1234)"""
   if not riot_id or '#' not in riot_id:
-    await ctx.send("Usage: `!tracker <name>#<tag>`\nExample: `!tracker TenZ#0303`")
+    await ctx.send("Usage: `!tracker <name>#<tag>`\nExample: `!tracker abcde#1234`")
     return
 
   name, tag = riot_id.split('#', 1)
@@ -741,12 +740,12 @@ async def tracker(ctx, *, riot_id: str = None):
     if profile["status"] == 451:
       await msg.edit(
         content=f"This profile is private on Tracker.gg.\n"
-                f"Try `!vtl {name}#{tag}` — it reads stats directly from Riot (works for private profiles)."
+                f"Try `!vtl recent {name}#{tag}` - it reads matches directly from Riot (works for private profiles)."
       )
       return
 
     if profile["status"] != 200:
-      await msg.edit(content=f"Error: {profile.get('error', 'Unknown error')}")
+      await msg.edit(content=f"{profile.get('error', 'Unknown error')}")
       return
 
     embed = discord.Embed(
@@ -794,151 +793,46 @@ async def tracker(ctx, *, riot_id: str = None):
 
 @bot.command(name='vtl')
 async def vtl(ctx, *, args: str = None):
-  """Season stats + est. Tracker Score, or `!vtl recent` for recent matches (private profiles too)"""
+  """Recent match(es) via Riot data - works for private Tracker.gg profiles"""
+  usage = (
+    "Usage: `!vtl recent <name>#<tag> [count]`  (count 1-5)\n"
+    "Example: `!vtl recent abcde#1234 3`"
+  )
   if not args:
-    await ctx.send(
-      "Usage:\n"
-      "`!vtl <name>#<tag>` — season stats + estimated Tracker Score\n"
-      "`!vtl recent <name>#<tag> [count]` — recent match(es), 1-3"
-    )
+    await ctx.send(usage)
     return
 
   args = args.strip()
-
-  # ── Subcommand: !vtl recent <name>#<tag> [count] ──────────────────────────
-  first_token = args.split(None, 1)[0].lower()
-  if first_token == "recent":
-    rest = args.split(None, 1)[1].strip() if len(args.split(None, 1)) > 1 else ""
-    if not rest or '#' not in rest:
-      await ctx.send("Usage: `!vtl recent <name>#<tag> [count]`\nExample: `!vtl recent TenZ#0303 3`")
-      return
-    parts = rest.rsplit(' ', 1)
-    count = 1
-    if len(parts) == 2 and parts[1].isdigit():
-      count = max(1, min(3, int(parts[1])))
-      rest = parts[0]
-    if '#' not in rest:
-      await ctx.send("Usage: `!vtl recent <name>#<tag> [count]`\nExample: `!vtl recent TenZ#0303 3`")
-      return
-    name, tag = rest.split('#', 1)
-    await _vtl_recent(ctx, name.strip(), tag.strip(), count)
+  tokens = args.split(None, 1)
+  if tokens[0].lower() != "recent":
+    await ctx.send(usage)
     return
 
-  # ── Season profile: !vtl <name>#<tag> ─────────────────────────────────────
-  if '#' not in args:
-    await ctx.send("Usage: `!vtl <name>#<tag>`\nExample: `!vtl TenZ#0303`")
+  rest = tokens[1].strip() if len(tokens) > 1 else ""
+  if not rest or '#' not in rest:
+    await ctx.send(usage)
     return
 
-  name, tag = args.split('#', 1)
-  name = name.strip()
-  tag = tag.strip()
+  parts = rest.rsplit(' ', 1)
+  count = 1
+  if len(parts) == 2 and parts[1].isdigit():
+    count = max(1, min(5, int(parts[1])))
+    rest = parts[0]
+  if '#' not in rest:
+    await ctx.send(usage)
+    return
 
-  vtl_url = f"https://vtl.lol/id/{urllib.parse.quote(name)}_{urllib.parse.quote(tag)}"
-  msg = await ctx.send(f"Fetching stats for **{name}#{tag}**...")
-
-  try:
-    result = await valorant_api.get_vtl_profile(name, tag)
-    stats = result.get("stats")
-
-    # ── Failure: link-only fallback embed ─────────────────────────────────
-    if result.get("status") != 200 or stats is None:
-      err = result.get("error", "Unknown error")
-      embed = discord.Embed(
-        title=f"Valorant Profile: {name}#{tag}",
-        description=(
-          f"Could not load stats: {err}\n\n"
-          f"[View profile on vtl.lol]({vtl_url})"
-        ),
-        color=discord.Color.orange()
-      )
-      embed.set_footer(text="HenrikDev (Riot)")
-      await msg.edit(content="", embed=embed)
-      return
-
-    # ── Rich stats embed ──────────────────────────────────────────────────
-    kdr       = stats.get("kdr", 0.0)
-    hs_pct    = stats.get("hs_pct", 0.0)
-    winrate   = stats.get("winrate", 0.0)
-    dpr       = stats.get("dpr", 0.0)
-    acs       = stats.get("acs", 0.0)
-    kills     = stats.get("kills", 0)
-    deaths    = stats.get("deaths", 0)
-    assists   = stats.get("assists", 0)
-    sample    = stats.get("sample_size", 0)
-    matches   = stats.get("matches", sample)
-    wins      = stats.get("wins", 0)
-    losses    = stats.get("losses", 0)
-    rank      = stats.get("rank_name", "Unranked")
-    avatar    = stats.get("avatar_url", "")
-    has_season = stats.get("has_season_totals", False)
-    est_score = stats.get("tracker_score") or valorant_api.calculate_tracker_score(kdr, hs_pct, winrate, dpr)
-
-    if has_season:
-      scope = f"**Season (current act)** — {matches} competitive matches\nRate stats below are from the last **{sample}** matches available"
-    elif stats.get("is_season"):
-      scope = f"Current act — **{sample}** competitive match(es)"
-      if stats.get("truncated"):
-        scope += " (capped)"
-    else:
-      scope = f"Last **{sample}** competitive match(es)"
-
-    embed = discord.Embed(
-      title=f"Valorant Profile: {name}#{tag}",
-      url=vtl_url,
-      description=scope,
-      color=discord.Color.dark_teal()
-    )
-
-    embed.add_field(name="Rank", value=rank, inline=True)
-    embed.add_field(name="Est. Tracker Score", value=f"~{est_score}", inline=True)
-    embed.add_field(name="​", value="​", inline=True)
-
-    # Season totals (authoritative from Riot MMR when available)
-    embed.add_field(name="Matches", value=str(matches), inline=True)
-    embed.add_field(name="W / L", value=f"{wins} / {losses}", inline=True)
-    embed.add_field(name="Winrate", value=f"{winrate:.1f}%", inline=True)
-
-    # Rate stats (from the available match sample)
-    embed.add_field(name="KDR", value=f"{kdr:.2f}", inline=True)
-    embed.add_field(name="HS%", value=f"{hs_pct:.1f}%", inline=True)
-    embed.add_field(name="DMG/Round", value=f"{dpr:.1f}" if dpr > 0 else "—", inline=True)
-
-    embed.add_field(name="ACS", value=f"{acs:.0f}" if acs > 0 else "—", inline=True)
-    if kills > 0 or deaths > 0 or assists > 0:
-      kda_label = f"K/D/A (last {sample})" if has_season else "K / D / A"
-      embed.add_field(name=kda_label, value=f"{kills} / {deaths} / {assists}", inline=True)
-    else:
-      embed.add_field(name="​", value="​", inline=True)
-    embed.add_field(name="​", value="​", inline=True)
-
-    if avatar:
-      embed.set_thumbnail(url=avatar)
-
-    if has_season:
-      embed.set_footer(text="Season totals from Riot (MMR) • KDR/HS%/DMG/Score from last "
-                            f"{sample} matches HenrikDev has stored • Tracker Score estimated, not official")
-    else:
-      embed.set_footer(text="Data from HenrikDev (Riot) • Tracker Score estimated, not official • Works for private Tracker.gg profiles")
-    await msg.edit(content="", embed=embed)
-
-  except Exception as e:
-    logger.error(f"Error in vtl command: {e}")
-    embed = discord.Embed(
-      title=f"Valorant Profile: {name}#{tag}",
-      description=f"An error occurred while fetching stats.\n\n[View profile on vtl.lol]({vtl_url})",
-      color=discord.Color.orange()
-    )
-    embed.set_footer(text="HenrikDev (Riot)")
-    await msg.edit(content="", embed=embed)
+  name, tag = rest.split('#', 1)
+  await _vtl_recent(ctx, name.strip(), tag.strip(), count)
 
 
 async def _vtl_recent(ctx, name: str, tag: str, count: int):
-  """Handle `!vtl recent` — recent match details for a (possibly private) profile."""
+  """Handle `!vtl recent` - recent match details for a (possibly private) profile."""
   msg = await ctx.send(f"Fetching {count} recent match(es) for **{name}#{tag}**...")
   try:
     result = await valorant_api.get_vtl_recent(name, tag, count)
     if result.get("status") != 200:
-      await msg.edit(content=f"Error: {result.get('error', 'Unknown error')}")
+      await msg.edit(content=f"{result.get('error', 'Unknown error')}")
       return
 
     matches = result["matches"]
@@ -950,7 +844,7 @@ async def _vtl_recent(ctx, name: str, tag: str, count: int):
 
       title = f"{name}#{tag}"
       if len(matches) > 1:
-        title = f"Match {idx + 1}/{len(matches)} — {name}#{tag}"
+        title = f"Match {idx + 1}/{len(matches)} - {name}#{tag}"
 
       embed = discord.Embed(
         title=title,
@@ -966,7 +860,7 @@ async def _vtl_recent(ctx, name: str, tag: str, count: int):
 
       if m["agent_image"]:
         embed.set_thumbnail(url=m["agent_image"])
-      embed.set_footer(text="Data from HenrikDev (Riot) • Works for private Tracker.gg profiles")
+      embed.set_footer(text="Data from HenrikDev")
       embeds.append(embed)
 
     await msg.edit(content="", embed=embeds[0])
@@ -997,7 +891,7 @@ async def join(ctx):
   """Join voice channel"""
   try:
     if ctx.author.voice is None or ctx.author.voice.channel is None:
-      await ctx.send('ERROR: Join a voice channel first!')
+      await ctx.send('Join a voice channel first!')
       return
     
     channel = ctx.author.voice.channel
@@ -1007,7 +901,7 @@ async def join(ctx):
     await ctx.send(f'Joined {channel.name}')
   except Exception as e:
     logger.error(f'Join error: {e}')
-    await ctx.send(f'ERROR: Failed to join: {str(e)[:100]}')
+    await ctx.send(f'Failed to join: {str(e)[:100]}')
 
 
 @bot.command(name='leave')
@@ -1015,7 +909,7 @@ async def leave(ctx):
   """Leave voice channel"""
   try:
     if ctx.voice_client is None:
-      await ctx.send('ERROR: Not in voice channel!')
+      await ctx.send('Not in voice channel!')
       return
     
     player = players.pop(ctx.guild.id, None)
@@ -1026,7 +920,7 @@ async def leave(ctx):
     await ctx.send('Disconnected')
   except Exception as e:
     logger.error(f'Leave error: {e}')
-    await ctx.send(f'ERROR: {str(e)[:100]}')
+    await ctx.send(f'{str(e)[:100]}')
 
 
 @bot.command(name='play')
@@ -1034,7 +928,7 @@ async def play(ctx, *, query: str):
   """Play music (shows top 5 results for search queries)"""
   try:
     if ctx.author.voice is None or ctx.author.voice.channel is None:
-      await ctx.send('ERROR: Join voice channel first!')
+      await ctx.send('Join voice channel first!')
       return
     
     if ctx.voice_client is None:
@@ -1043,7 +937,7 @@ async def play(ctx, *, query: str):
         await safe_voice_connect(ctx.author.voice.channel)
       except Exception as e:
         logger.error(f'Auto-join failed: {e}')
-        await ctx.send(f'ERROR: Failed to join voice: {str(e)[:100]}')
+        await ctx.send(f'Failed to join voice: {str(e)[:100]}')
         return
     
     # If it's a URL, do full extraction and queue directly
@@ -1059,11 +953,11 @@ async def play(ctx, *, query: str):
           )
         except Exception as e:
           logger.error(f'Track load error: {e}')
-          await ctx.send(f'ERROR: Failed to load: {str(e)[:100]}')
+          await ctx.send(f'Failed to load: {str(e)[:100]}')
           return
 
       if not tracks:
-        await ctx.send('ERROR: No tracks found.')
+        await ctx.send('No tracks found.')
         return
 
       player = get_player(ctx)
@@ -1086,11 +980,11 @@ async def play(ctx, *, query: str):
         results = await search_youtube(query, bot.loop)
       except Exception as e:
         logger.error(f'Search error: {e}')
-        await ctx.send(f'ERROR: Failed to search: {str(e)[:100]}')
+        await ctx.send(f'Failed to search: {str(e)[:100]}')
         return
 
     if not results:
-      await ctx.send('ERROR: No results found.')
+      await ctx.send('No results found.')
       return
 
     # Show top 5 results for user selection
@@ -1134,7 +1028,7 @@ async def play(ctx, *, query: str):
 
     track = await Track.from_url(selected.url, ctx.author, bot.loop)
     if track is None:
-      await loading_msg.edit(content=f'ERROR: Failed to load "{selected.title}". Try another result.')
+      await loading_msg.edit(content=f'Failed to load "{selected.title}". Try another result.')
       return
 
     player = get_player(ctx)
@@ -1144,7 +1038,7 @@ async def play(ctx, *, query: str):
 
   except Exception as e:
     logger.error(f'Play error: {e}')
-    await ctx.send(f'ERROR: {str(e)[:100]}')
+    await ctx.send(f'{str(e)[:100]}')
 
 
 @bot.command(name='search')
@@ -1157,11 +1051,11 @@ async def search(ctx, *, query: str):
         results = await search_youtube(query, bot.loop)
       except Exception as e:
         logger.error(f'Search error: {e}')
-        await ctx.send(f'ERROR: Failed to search: {str(e)[:100]}')
+        await ctx.send(f'Failed to search: {str(e)[:100]}')
         return
 
     if not results:
-      await ctx.send('ERROR: No results found.')
+      await ctx.send('No results found.')
       return
 
     results = results[:5]
@@ -1206,14 +1100,14 @@ async def search(ctx, *, query: str):
         try:
           await safe_voice_connect(ctx.author.voice.channel)
         except Exception as e:
-          await ctx.send(f'ERROR: Failed to join voice: {str(e)[:100]}')
+          await ctx.send(f'Failed to join voice: {str(e)[:100]}')
           return
 
       # Full extraction for the selected result
       loading_msg = await ctx.send(f'Loading: {selected.title}...')
       track = await Track.from_url(selected.url, ctx.author, bot.loop)
       if track is None:
-        await loading_msg.edit(content=f'ERROR: Failed to load "{selected.title}". Try another result.')
+        await loading_msg.edit(content=f'Failed to load "{selected.title}". Try another result.')
         return
 
       player = get_player(ctx)
@@ -1226,7 +1120,7 @@ async def search(ctx, *, query: str):
 
   except Exception as e:
     logger.error(f'Search error: {e}')
-    await ctx.send(f'ERROR: {str(e)[:100]}')
+    await ctx.send(f'{str(e)[:100]}')
 
 
 @bot.command(name='pause')
@@ -1238,7 +1132,7 @@ async def pause(ctx):
       vc.pause()
       await ctx.send('Paused')
     else:
-      await ctx.send('ERROR: Nothing playing!')
+      await ctx.send('Nothing playing!')
   except Exception as e:
     logger.error(f'Pause error: {e}')
 
@@ -1252,7 +1146,7 @@ async def resume(ctx):
       vc.resume()
       await ctx.send('Resumed')
     else:
-      await ctx.send('ERROR: Nothing paused!')
+      await ctx.send('Nothing paused!')
   except Exception as e:
     logger.error(f'Resume error: {e}')
 
@@ -1266,7 +1160,7 @@ async def skip(ctx):
       vc.stop()
       await ctx.send('Skipped')
     else:
-      await ctx.send('ERROR: Nothing to skip!')
+      await ctx.send('Nothing to skip!')
   except Exception as e:
     logger.error(f'Skip error: {e}')
 
@@ -1332,15 +1226,14 @@ async def commands_cmd(ctx):
   """Show all commands"""
   try:
     embed = discord.Embed(
-      title='Discord Music Bot - Commands',
+      title='Commands',
       color=discord.Color.green()
     )
     
     commands_list = [
-      ('recent <name>#<tag> [count]', 'Recent match stats (1-3 matches)'),
+      ('recent <name>#<tag> [count]', 'Recent match stats (1-5 matches)'),
       ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
-      ('vtl <name>#<tag>', 'Season stats + est. Tracker Score (private profiles too)'),
-      ('vtl recent <name>#<tag> [count]', 'Recent match(es) for private profiles (1-3)'),
+      ('vtl recent <name>#<tag> [count]', 'Recent match(es), works for private profiles (1-5)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),
