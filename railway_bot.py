@@ -1262,7 +1262,7 @@ async def commands_cmd(ctx):
     for cmd, desc in commands_list:
       embed.add_field(name=f'!{cmd}', value=desc, inline=False)
     
-    embed.set_footer(text='Railway Music Bot v1.0')
+    embed.set_footer(text='test')
     await ctx.send(embed=embed)
   except Exception as e:
     logger.error(f'Commands error: {e}')
