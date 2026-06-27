@@ -7,6 +7,7 @@ import asyncio
 import os
 import random
 import logging
+import json as _stdlib_json
 from collections import deque
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
@@ -39,6 +40,37 @@ if not DISCORD_TOKEN:
 
 # FFmpeg path - Railway has ffmpeg pre-installed
 FFMPEG_PATH = os.getenv('FFMPEG_PATH', 'ffmpeg')
+
+# ---------- Per-user profile storage (Discord ID -> Riot name#tag) ----------
+PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profiles.json')
+
+def _load_profiles() -> dict:
+  """Load saved profiles from disk."""
+  try:
+    with open(PROFILES_FILE, 'r', encoding='utf-8') as f:
+      return _stdlib_json.load(f)
+  except (FileNotFoundError, _stdlib_json.JSONDecodeError):
+    return {}
+
+def _save_profiles(profiles: dict):
+  """Save profiles to disk."""
+  with open(PROFILES_FILE, 'w', encoding='utf-8') as f:
+    _stdlib_json.dump(profiles, f, indent=2)
+
+def get_saved_riot_id(discord_user_id: int) -> tuple[str, str] | None:
+  """Return (name, tag) for a Discord user, or None if not set."""
+  profiles = _load_profiles()
+  riot_id = profiles.get(str(discord_user_id))
+  if riot_id and '#' in riot_id:
+    name, tag = riot_id.split('#', 1)
+    return name.strip(), tag.strip()
+  return None
+
+def set_saved_riot_id(discord_user_id: int, riot_id: str):
+  """Save a Riot ID for a Discord user."""
+  profiles = _load_profiles()
+  profiles[str(discord_user_id)] = riot_id
+  _save_profiles(profiles)
 
 # ---------- Bot setup ----------
 intents = discord.Intents.default()
@@ -604,27 +636,62 @@ async def hello(ctx):
   except Exception as e:
     logger.error(f'Hello command error: {e}')
 
-@bot.command(name='recent')
-async def recent(ctx, *, riot_id: str = None):
-  """Fetch recent Valorant match(es) (e.g. !recent abcde#1234 or !recent abcde#1234 3)"""
+@bot.command(name='setprofile')
+async def setprofile(ctx, *, riot_id: str = None):
+  """Link your Discord account to a Riot ID (e.g. !setprofile abcde#1234)"""
   if not riot_id or '#' not in riot_id:
-    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent abcde#1234` or `!recent abcde#1234 3`")
-    return
-
-  # Parse count from the end of the input (e.g. "abcde#1234 2")
-  parts = riot_id.rsplit(' ', 1)
-  count = 1
-  if len(parts) == 2 and parts[1].isdigit():
-    count = max(1, min(5, int(parts[1])))
-    riot_id = parts[0]
-
-  if '#' not in riot_id:
-    await ctx.send("Usage: `!recent <name>#<tag> [count]`\nExample: `!recent abcde#1234` or `!recent abcde#1234 3`")
+    saved = get_saved_riot_id(ctx.author.id)
+    if saved:
+      await ctx.send(f"Your current profile: **{saved[0]}#{saved[1]}**\nTo change: `!setprofile <name>#<tag>`")
+    else:
+      await ctx.send("Usage: `!setprofile <name>#<tag>`\nExample: `!setprofile abcde#1234`")
     return
 
   name, tag = riot_id.split('#', 1)
   name = name.strip()
   tag = tag.strip()
+  if not name or not tag:
+    await ctx.send("Usage: `!setprofile <name>#<tag>`\nExample: `!setprofile abcde#1234`")
+    return
+
+  set_saved_riot_id(ctx.author.id, f"{name}#{tag}")
+  await ctx.send(f"Profile set! **{name}#{tag}** is now linked to {ctx.author.mention}.\nYou can now use `!recent`, `!tracker`, and `!vtl recent` without typing your name.")
+
+
+@bot.command(name='recent')
+async def recent(ctx, *, riot_id: str = None):
+  """Fetch recent Valorant match(es) (e.g. !recent abcde#1234 or !recent abcde#1234 3)"""
+  # If no argument, try to use saved profile
+  if not riot_id or '#' not in riot_id:
+    # Check if it's just a number (count) with no name
+    count_only = None
+    if riot_id and riot_id.strip().isdigit():
+      count_only = max(1, min(5, int(riot_id.strip())))
+
+    saved = get_saved_riot_id(ctx.author.id)
+    if saved:
+      name, tag = saved
+      count = count_only or 1
+    else:
+      await ctx.send("Usage: `!recent <name>#<tag> [count]`\nOr set your profile first: `!setprofile <name>#<tag>`")
+      return
+  else:
+    # Parse count from the end of the input (e.g. "abcde#1234 2")
+    parts = riot_id.rsplit(' ', 1)
+    count = 1
+    if len(parts) == 2 and parts[1].isdigit():
+      count = max(1, min(5, int(parts[1])))
+      riot_id = parts[0]
+
+    if '#' not in riot_id:
+      await ctx.send("Usage: `!recent <name>#<tag> [count]`\nOr set your profile first: `!setprofile <name>#<tag>`")
+      return
+
+    name, tag = riot_id.split('#', 1)
+    name = name.strip()
+    tag = tag.strip()
+
+
 
   msg = await ctx.send(f"Fetching {count} recent match(es) for **{name}#{tag}**...")
 
@@ -736,12 +803,16 @@ async def recent(ctx, *, riot_id: str = None):
 async def tracker(ctx, *, riot_id: str = None):
   """Show season profile stats from Tracker.gg (e.g. !tracker abcde#1234)"""
   if not riot_id or '#' not in riot_id:
-    await ctx.send("Usage: `!tracker <name>#<tag>`\nExample: `!tracker abcde#1234`")
-    return
-
-  name, tag = riot_id.split('#', 1)
-  name = name.strip()
-  tag = tag.strip()
+    saved = get_saved_riot_id(ctx.author.id)
+    if saved:
+      name, tag = saved
+    else:
+      await ctx.send("Usage: `!tracker <name>#<tag>`\nOr set your profile first: `!setprofile <name>#<tag>`")
+      return
+  else:
+    name, tag = riot_id.split('#', 1)
+    name = name.strip()
+    tag = tag.strip()
 
   msg = await ctx.send(f"Fetching season profile for **{name}#{tag}**...")
 
@@ -820,9 +891,23 @@ async def vtl(ctx, *, args: str = None):
     return
 
   rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+  # If no name#tag provided, try saved profile
   if not rest or '#' not in rest:
-    await ctx.send(usage)
-    return
+    # Check if rest is just a count number
+    count_only = None
+    if rest and rest.strip().isdigit():
+      count_only = max(1, min(5, int(rest.strip())))
+
+    saved = get_saved_riot_id(ctx.author.id)
+    if saved:
+      name, tag = saved
+      count = count_only or 1
+      await _vtl_recent(ctx, name, tag, count)
+      return
+    else:
+      await ctx.send("Usage: `!vtl recent <name>#<tag> [count]`\nOr set your profile first: `!setprofile <name>#<tag>`")
+      return
 
   parts = rest.rsplit(' ', 1)
   count = 1
@@ -1242,9 +1327,10 @@ async def commands_cmd(ctx):
     )
     
     commands_list = [
-      ('recent <name>#<tag> [count]', 'Recent match stats (1-5 matches)'),
-      ('tracker <name>#<tag>', 'Season profile from Tracker.gg'),
-      ('vtl recent <name>#<tag> [count]', 'Recent match(es), works for private profiles (1-5)'),
+      ('setprofile <name>#<tag>', 'Link your Riot ID (use commands without typing name)'),
+      ('recent [name#tag] [count]', 'Recent match stats (uses saved profile if no name)'),
+      ('tracker [name#tag]', 'Season profile from Tracker.gg (uses saved profile if no name)'),
+      ('vtl recent [name#tag] [count]', 'Recent match(es), works for private profiles (uses saved profile if no name)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),
       ('play <query>', 'Search & pick from top 5, or play URL directly'),
