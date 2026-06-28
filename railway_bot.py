@@ -702,7 +702,7 @@ async def recent(ctx, *, riot_id: str = None):
       return
 
     matches = stats["matches"]
-    s_tracker_score = stats["season_tracker_score"]
+    s_tracker_score = stats["act_tracker_score"]
     s_kills, s_deaths = stats["s_kills"], stats["s_deaths"]
     s_matches, s_wins = stats["s_matches"], stats["s_wins"]
     s_hs, s_body, s_leg = stats["s_hs"], stats["s_body"], stats["s_leg"]
@@ -739,7 +739,7 @@ async def recent(ctx, *, riot_id: str = None):
       else:
         embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-      # Season deltas for each match
+      # Act deltas for each match
       current_kdr = s_kills / max(s_deaths, 1)
       p_kills = s_kills - m["kills"]
       p_deaths = s_deaths - m["deaths"]
@@ -760,15 +760,15 @@ async def recent(ctx, *, riot_id: str = None):
       prev_hs = (p_hs / max(p_total, 1)) * 100
       hs_delta = current_hs - prev_hs
 
-      embed.add_field(name="Season KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
-      embed.add_field(name="Season HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
-      embed.add_field(name="Season WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
+      embed.add_field(name="Act KDR", value=f"{current_kdr:.2f} ({fmt_delta(kdr_delta)})", inline=True)
+      embed.add_field(name="Act HS%", value=f"{current_hs:.1f}% ({fmt_delta(hs_delta, True)})", inline=True)
+      embed.add_field(name="Act WR", value=f"{current_wr:.1f}% ({fmt_delta(wr_delta, True)})", inline=True)
 
       m_tracker_score = m.get("match_tracker_score")
       trn_delta = 0
       if m_tracker_score and s_tracker_score:
         trn_delta = (m_tracker_score - s_tracker_score) / max(s_matches, 1)
-        embed.add_field(name="Tracker Score (Season)", value=f"{int(s_tracker_score)} ({fmt_delta(trn_delta)})", inline=True)
+        embed.add_field(name="Tracker Score (Act)", value=f"{int(s_tracker_score)} ({fmt_delta(trn_delta)})", inline=True)
         embed.add_field(name="Tracker Score (Match)", value=str(m_tracker_score), inline=True)
         embed.add_field(name="\u200b", value="\u200b", inline=True)
 
@@ -786,7 +786,11 @@ async def recent(ctx, *, riot_id: str = None):
       if m["agent_image"]:
         embed.set_thumbnail(url=m["agent_image"])
 
-      embed.set_footer(text="Data from Tracker.gg")
+      footer_text = "Data from Tracker.gg"
+      act_name = stats.get("act_name", "")
+      if act_name:
+        footer_text += f" • {act_name}"
+      embed.set_footer(text=footer_text)
       embeds.append(embed)
 
     # Send first embed as edit to the loading message, rest as new messages
@@ -801,7 +805,7 @@ async def recent(ctx, *, riot_id: str = None):
 
 @bot.command(name='tracker')
 async def tracker(ctx, *, riot_id: str = None):
-  """Show season profile stats from Tracker.gg (e.g. !tracker abcde#1234)"""
+  """Show act profile stats from Tracker.gg (e.g. !tracker abcde#1234)"""
   if not riot_id or '#' not in riot_id:
     saved = get_saved_riot_id(ctx.author.id)
     if saved:
@@ -814,10 +818,10 @@ async def tracker(ctx, *, riot_id: str = None):
     name = name.strip()
     tag = tag.strip()
 
-  msg = await ctx.send(f"Fetching season profile for **{name}#{tag}**...")
+  msg = await ctx.send(f"Fetching act profile for **{name}#{tag}**...")
 
   try:
-    profile = await valorant_api.get_season_profile(name, tag)
+    profile = await valorant_api.get_act_profile(name, tag)
 
     if profile["status"] == 451:
       await msg.edit(
@@ -831,7 +835,7 @@ async def tracker(ctx, *, riot_id: str = None):
       return
 
     embed = discord.Embed(
-      title=f"Season Profile: {name}#{tag}",
+      title=f"Act Profile: {name}#{tag}",
       color=discord.Color.dark_teal()
     )
 
@@ -865,7 +869,13 @@ async def tracker(ctx, *, riot_id: str = None):
     if profile.get("avatar_url"):
       embed.set_thumbnail(url=profile["avatar_url"])
 
-    embed.set_footer(text="Data from Tracker.gg")
+    footer_text = "Data from Tracker.gg"
+    act_name = profile.get("act_name", "")
+    if act_name:
+      footer_text += f" • {act_name}"
+    else:
+      footer_text += " • Act data may be from a previous act if no games played this act"
+    embed.set_footer(text=footer_text)
     await msg.edit(content="", embed=embed)
 
   except Exception as e:
@@ -956,7 +966,11 @@ async def _vtl_recent(ctx, name: str, tag: str, count: int):
 
       if m["agent_image"]:
         embed.set_thumbnail(url=m["agent_image"])
-      embed.set_footer(text="Data from HenrikDev")
+      footer_text = "Data from HenrikDev"
+      match_act = m.get("act", "")
+      if match_act:
+        footer_text += f" • {match_act}"
+      embed.set_footer(text=footer_text)
       embeds.append(embed)
 
     await msg.edit(content="", embed=embeds[0])
@@ -1329,7 +1343,7 @@ async def commands_cmd(ctx):
     commands_list = [
       ('setprofile <name>#<tag>', 'Link your Riot ID (use commands without typing name)'),
       ('recent [name#tag] [count]', 'Recent match stats (uses saved profile if no name)'),
-      ('tracker [name#tag]', 'Season profile from Tracker.gg (uses saved profile if no name)'),
+      ('tracker [name#tag]', 'Act profile from Tracker.gg (uses saved profile if no name)'),
       ('vtl recent [name#tag] [count]', 'Recent match(es), works for private profiles (uses saved profile if no name)'),
       ('join', 'Join voice channel'),
       ('leave', 'Leave voice channel'),

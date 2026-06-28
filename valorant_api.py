@@ -1,4 +1,5 @@
 import os
+import re
 import urllib.parse
 import logging
 import asyncio
@@ -10,6 +11,17 @@ logger = logging.getLogger(__name__)
 # Set HENRIK_API_KEY in Railway environment variables.
 HENRIK_API_KEY = os.getenv("HENRIK_API_KEY", "")
 HENRIK_BASE = "https://api.henrikdev.xyz"
+
+
+def _format_act_name(short: str) -> str:
+    """Convert act short codes like 'e9a2' to 'Episode 9: Act 2'.
+    Returns the original string if format is unrecognised."""
+    if not short:
+        return ""
+    m = re.match(r'e(\d+)a(\d+)', short.lower())
+    if m:
+        return f"Episode {m.group(1)}: Act {m.group(2)}"
+    return short
 
 # curl_cffi is synchronous, so we run it in a thread
 def fetch_tracker_url_sync(url: str):
@@ -105,13 +117,13 @@ async def get_valorant_stats(name: str, tag: str, count: int = 1) -> dict:
         tag: Riot tag
         count: Number of recent matches to return (1-5)
     
-    Returns a dict with status, season stats, and a list of parsed matches.
+    Returns a dict with status, act stats, and a list of parsed matches.
     """
     count = max(1, min(5, count))
     
     player_id = f"{urllib.parse.quote(name)}%23{urllib.parse.quote(tag)}"
     
-    # 1. Fetch Profile (for Tracker Score and Season Stats)
+    # 1. Fetch Profile (for Tracker Score and Act Stats)
     profile_url = f"https://api.tracker.gg/api/v2/valorant/standard/profile/riot/{player_id}"
     profile_res = await fetch_tracker_url(profile_url)
     
@@ -129,8 +141,9 @@ async def get_valorant_stats(name: str, tag: str, count: int = 1) -> dict:
     except Exception:
         pass
         
-    # Extract Season Stats for Delta Math
-    s_stats = profile_data["segments"][0]["stats"]
+    # Extract Act Stats for Delta Math
+    overview_seg = profile_data["segments"][0]
+    s_stats = overview_seg["stats"]
     s_kills = s_stats.get("kills", {}).get("value", 0)
     s_deaths = s_stats.get("deaths", {}).get("value", 0)
     s_matches = s_stats.get("matchesPlayed", {}).get("value", 0)
@@ -139,6 +152,18 @@ async def get_valorant_stats(name: str, tag: str, count: int = 1) -> dict:
     s_hs = s_stats.get("dealtHeadshots", {}).get("value", 0)
     s_body = s_stats.get("dealtBodyshots", {}).get("value", 0)
     s_leg = s_stats.get("dealtLegshots", {}).get("value", 0)
+    
+    # Try to determine which act this data is from
+    act_name = ""
+    try:
+        seg_attrs = overview_seg.get("attributes", {})
+        act_name = seg_attrs.get("season", "") or seg_attrs.get("seasonId", "")
+        if not act_name:
+            # Some tracker.gg responses put it in the segment metadata
+            seg_meta = overview_seg.get("metadata", {})
+            act_name = seg_meta.get("season", "") or seg_meta.get("seasonName", "")
+    except Exception:
+        pass
     
     # 2. Fetch Matches
     matches_url = f"https://api.tracker.gg/api/v2/valorant/standard/matches/riot/{player_id}?type=competitive"
@@ -166,7 +191,8 @@ async def get_valorant_stats(name: str, tag: str, count: int = 1) -> dict:
     
     return {
         "status": 200,
-        "season_tracker_score": tracker_score,
+        "act_name": _format_act_name(act_name),
+        "act_tracker_score": tracker_score,
         "s_kills": s_kills, "s_deaths": s_deaths,
         "s_matches": s_matches, "s_wins": s_wins,
         "s_hs": s_hs, "s_body": s_body, "s_leg": s_leg,
@@ -174,8 +200,8 @@ async def get_valorant_stats(name: str, tag: str, count: int = 1) -> dict:
     }
 
 
-async def get_season_profile(name: str, tag: str) -> dict:
-    """Fetch season-level overview stats from tracker.gg profile for the !tracker command."""
+async def get_act_profile(name: str, tag: str) -> dict:
+    """Fetch act-level overview stats from tracker.gg profile for the !tracker command."""
     
     player_id = f"{urllib.parse.quote(name)}%23{urllib.parse.quote(tag)}"
     
@@ -194,6 +220,17 @@ async def get_season_profile(name: str, tag: str) -> dict:
         
         # Overview segment (index 0)
         overview = profile_data["segments"][0]
+        
+        # Determine which act the profile stats are from
+        act_name = ""
+        try:
+            seg_attrs = overview.get("attributes", {})
+            act_name = seg_attrs.get("season", "") or seg_attrs.get("seasonId", "")
+            if not act_name:
+                seg_meta = overview.get("metadata", {})
+                act_name = seg_meta.get("season", "") or seg_meta.get("seasonName", "")
+        except Exception:
+            pass
         s_stats = overview.get("stats", {})
         
         # Core stats
@@ -221,7 +258,7 @@ async def get_season_profile(name: str, tag: str) -> dict:
         
         kast = s_stats.get("kAST", {}).get("value", 0)
         
-        # Rank from the most recent season data
+        # Rank from the most recent act data
         rank_name = s_stats.get("rank", {}).get("metadata", {}).get("tierName", "Unranked")
         
         # Top agents (from agent segments, index 1 onward)
@@ -243,6 +280,7 @@ async def get_season_profile(name: str, tag: str) -> dict:
         
         return {
             "status": 200,
+            "act_name": _format_act_name(act_name),
             "avatar_url": avatar_url,
             "rank_name": rank_name,
             "tracker_score": tracker_score,
@@ -261,7 +299,7 @@ async def get_season_profile(name: str, tag: str) -> dict:
         }
         
     except Exception as e:
-        logger.error(f"Error parsing season profile: {e}")
+        logger.error(f"Error parsing act profile: {e}")
         return {"status": 500, "error": "Failed to parse profile data structure."}
 
 
@@ -341,7 +379,7 @@ def _player_damage(stats: dict) -> float:
     return _num(stats.get("damage_made"))
 
 
-def _season_of(match: dict) -> str:
+def _act_of(match: dict) -> str:
     """Act identifier for a match (stored-matches: meta.season; v4: metadata.season)."""
     meta = match.get("meta") or match.get("metadata") or {}
     season = meta.get("season") or {}
@@ -450,7 +488,7 @@ def _extract_match(match: dict, puuid: str, name: str, tag: str) -> dict | None:
         "hs": hs, "bs": bs, "ls": ls,
         "damage": damage, "rounds": rounds, "won": won,
         "tier_name": tier_name, "agent": agent,
-        "season": _season_of(match),
+        "act": _act_of(match),
     }
 
 
@@ -506,6 +544,7 @@ def _extract_match_detail(match: dict, puuid: str, name: str, tag: str) -> dict 
         "match_kdr":  base["k"] / max(base["d"], 1),
         "match_hs_pct": (base["hs"] / shots * 100) if shots else 0.0,
         "rank_name":  rank_name,
+        "act":        _format_act_name(base.get("act", "")),
     }
 
 
@@ -570,7 +609,9 @@ def fetch_vtl_recent_sync(name: str, tag: str, count: int = 1) -> dict:
 
     if not matches:
         return {"status": 404, "error": "Could not parse recent match data."}
-    return {"status": 200, "matches": matches}
+    # Use the act from the most recent match as the overall act
+    act_name = matches[0].get("act", "") if matches else ""
+    return {"status": 200, "act_name": act_name, "matches": matches}
 
 
 async def get_vtl_recent(name: str, tag: str, count: int = 1) -> dict:
